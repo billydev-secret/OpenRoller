@@ -55,71 +55,67 @@ class Bot(discord.Client):
 bot = Bot()
 
 class RiskyRollState:
-    def __init__(self, opener_id):
+    def __init__(self, opener_id: int):
         self.opener_id = opener_id
-        self.rolls = {}  # {user_id: roll}
+        self.rolls: dict[int, int] = {}  # {user_id: roll}
         self.is_open = True
-        self.highest_user = None
-        self.lowest_user = None
+        self.highest_user: int | None = None
+        self.lowest_user: int | None = None
 
-    def add_roll(self, user_id, value):
+    def add_roll(self, user_id: int, value: int):
         self.rolls[user_id] = value
 
     def resolve(self):
         if len(self.rolls) < 2:
-            return False
+            return "not_enough"
 
-        highest = max(self.rolls, key=self.rolls.get)
-        lowest = min(self.rolls, key=self.rolls.get)
+        max_value = max(self.rolls.values())
+        min_value = min(self.rolls.values())
 
-        self.highest_user = highest
-        self.lowest_user = lowest
+        highest_users = [u for u, r in self.rolls.items() if r == max_value]
+
+        # 🔁 Tie for highest
+        if len(highest_users) > 1:
+            return "tie"
+
+        # 🎉 Special Case: 69 rolled (anyone)
+        sixtyniners = [u for u, r in self.rolls.items() if r == 69]
+        if sixtyniners:
+            self.highest_user = highest_users[0]
+            self.lowest_user = None
+            self.is_open = False
+            return "sixtynine"
+
+        lowest_users = [u for u, r in self.rolls.items() if r == min_value]
+
+        self.highest_user = highest_users[0]
+        self.lowest_user = lowest_users[0]
         self.is_open = False
-        return True
+        return "ok"
+        
 
-
+# ==============================
+# Logic
+# ==============================
 class RiskyRollView(discord.ui.View):
-    def __init__(self, channel_id):
+    def __init__(self, channel_id: int):
         super().__init__(timeout=None)
         self.channel_id = channel_id
-        log.info(f"View created {discord.Interaction}")
 
     @discord.ui.button(label="Roll", style=discord.ButtonStyle.primary, emoji="🎲")
     async def roll_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         state = active_games.get(self.channel_id)
-
-        log.info(f"Roll button {discord.Interaction}")
-
         if not state or not state.is_open:
-            await interaction.response.send_message(
-                "This round is closed.", ephemeral=True
-            )
-            return
-
-        if interaction.user.id in state.rolls and not DEBUG:
-            await interaction.response.send_message(
-                "You've already rolled this round.", ephemeral=True
-            )
+            await interaction.response.send_message("No open round to roll in.", ephemeral=True)
             return
 
         roll = random.randint(1, 100)
         state.add_roll(interaction.user.id, roll)
 
-        # Auto-generate fake players in debug mode
-        if DEBUG:
-            for i in range(DEBUG_FAKE_PLAYERS):
-                fake_id = 900000000000000000 + i  # High dummy IDs
-                fake_roll = random.randint(1, 100)
-                state.add_roll(fake_id + random.randint(0, 10000), fake_roll)
-
-
         embed = build_embed(state, interaction.guild)
 
-        await interaction.response.edit_message(
-            embed=embed,
-            view=self,
-            allowed_mentions=discord.AllowedMentions.none()
-        )
+        # Update the original message (the one with the buttons)
+        await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="Close Round", style=discord.ButtonStyle.danger, emoji="🔒")
     async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -136,46 +132,51 @@ class RiskyRollView(discord.ui.View):
             )
             return
 
-        if not state.is_open:
-            await interaction.response.send_message(
-                "Round already closed.",
-                ephemeral=True
-            )
-            return
+        result = state.resolve()
 
-        if not state.resolve():
+        if result == "not_enough":
             await interaction.response.send_message(
                 "At least 2 players must roll.",
                 ephemeral=True
             )
             return
 
-        embed = build_embed(state, interaction.guild)
+        if result == "tie":
+            max_value = max(state.rolls.values())
+            tied_users = [f"<@{u}>" for u, r in state.rolls.items() if r == max_value]
+            await interaction.response.send_message(
+                f"🎲 Tie for highest roll ({max_value})!\n"
+                f"{', '.join(tied_users)} must reroll.",
+                allowed_mentions=discord.AllowedMentions(users=True)
+            )
+            return
 
-        # Disable roll button
+        # Disable buttons
         for child in self.children:
-            if isinstance(child, discord.ui.Button) and child.label == "Roll":
+            if isinstance(child, discord.ui.Button):
                 child.disabled = True
 
-        # Clear active state
+        embed = build_embed(state, interaction.guild)
+
+        # Remove game state
         del active_games[self.channel_id]
 
-        # First response (required)
         await interaction.response.edit_message(embed=embed, view=self)
 
-        # Followup for ping
-        await interaction.followup.send(
-            content=f"🎤 <@{state.highest_user}> asks\n💬 <@{state.lowest_user}> answers",
-            allowed_mentions=discord.AllowedMentions(users=True)
-        )
-
-
-
-
-
-# ==============================
-# Logic
-# ==============================
+        if result == "sixtynine":
+            await interaction.followup.send(
+                content=(
+                    f"🔥 69 rolled!\n"
+                    f"<@{state.highest_user}> asks one shared question for everyone."
+                ),
+                allowed_mentions=discord.AllowedMentions(users=True)
+            )
+        else:
+            await interaction.followup.send(
+                content=f"🎤 <@{state.highest_user}> asks\n💬 <@{state.lowest_user}> answers",
+                allowed_mentions=discord.AllowedMentions(users=True)
+            )
+            
 def build_embed(state: RiskyRollState, guild):
     embed = discord.Embed(
         title="🎲 Risky Rolls",
@@ -186,10 +187,16 @@ def build_embed(state: RiskyRollState, guild):
         embed.description = "Press **Roll** to join this round."
     else:
         embed.description = "🔒 Round Closed"
+    
+    roll_count = len(state.rolls)
 
     # Rolls list
     if not state.rolls:
-        embed.add_field(name="Rolls", value="No rolls yet.", inline=False)
+        embed.add_field(
+            name=f"Rolls (0)",
+            value="No rolls yet.",
+            inline=False
+        )    
     else:
         sorted_rolls = sorted(state.rolls.items(), key=lambda x: x[1], reverse=True)
 
@@ -198,14 +205,24 @@ def build_embed(state: RiskyRollState, guild):
             mention = f"<@{user_id}>"
             lines.append(f"**{roll}** — {mention}")
 
-        embed.add_field(name="Rolls", value="\n".join(lines), inline=False)
-
+        embed.add_field(
+            name=f"Rolls ({roll_count})",
+            value="\n".join(lines),
+            inline=False
+        )
+    
     # Resolution
     if not state.is_open and state.highest_user:
+        high_mention = f"<@{state.highest_user}>"
 
-            high_mention = f"<@{state.highest_user}>"
+        if state.lowest_user is None:
+            embed.add_field(
+                name="Result",
+                value=f"🔥 69 rolled!\n🎤 {high_mention} asks one shared question for everyone.",
+                inline=False
+            )
+        else:
             low_mention = f"<@{state.lowest_user}>"
-
             embed.add_field(
                 name="Result",
                 value=f"🎤 {high_mention} asks\n💬 {low_mention} answers",
