@@ -30,6 +30,18 @@ logging.basicConfig(level=logging.INFO)
 intents = discord.Intents.default()
 
 
+def serialize_user_ids(user_ids: set[int]) -> str | None:
+    if not user_ids:
+        return None
+    return ",".join(str(user_id) for user_id in sorted(user_ids))
+
+
+def deserialize_user_ids(raw: str | None) -> set[int]:
+    if not raw:
+        return set()
+    return {int(part) for part in raw.split(",") if part}
+
+
 class StateStore:
     def __init__(self, path: str):
         self.path = path
@@ -56,7 +68,8 @@ class StateStore:
                     message_id INTEGER,
                     is_open INTEGER NOT NULL DEFAULT 1,
                     highest_user INTEGER,
-                    lowest_user INTEGER
+                    lowest_user INTEGER,
+                    reroll_user_ids TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS round_rolls (
@@ -68,6 +81,13 @@ class StateStore:
                 );
                 """
             )
+
+            active_round_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(active_rounds)").fetchall()
+            }
+            if "reroll_user_ids" not in active_round_columns:
+                conn.execute("ALTER TABLE active_rounds ADD COLUMN reroll_user_ids TEXT")
 
     def load_ping_roles(self) -> dict[int, int]:
         with self._connect() as conn:
@@ -98,16 +118,18 @@ class StateStore:
                     message_id,
                     is_open,
                     highest_user,
-                    lowest_user
+                    lowest_user,
+                    reroll_user_ids
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(channel_id) DO UPDATE SET
                     guild_id = excluded.guild_id,
                     opener_id = excluded.opener_id,
                     message_id = excluded.message_id,
                     is_open = excluded.is_open,
                     highest_user = excluded.highest_user,
-                    lowest_user = excluded.lowest_user
+                    lowest_user = excluded.lowest_user,
+                    reroll_user_ids = excluded.reroll_user_ids
                 """,
                 (
                     state.channel_id,
@@ -117,9 +139,11 @@ class StateStore:
                     int(state.is_open),
                     state.highest_user,
                     state.lowest_user,
+                    serialize_user_ids(state.reroll_user_ids),
                 ),
             )
 
+            conn.execute("DELETE FROM round_rolls WHERE channel_id = ?", (state.channel_id,))
             for user_id, roll in state.rolls.items():
                 conn.execute(
                     """
@@ -129,17 +153,6 @@ class StateStore:
                     """,
                     (state.channel_id, user_id, roll),
                 )
-
-    def save_roll(self, channel_id: int, user_id: int, roll: int) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO round_rolls (channel_id, user_id, roll)
-                VALUES (?, ?, ?)
-                ON CONFLICT(channel_id, user_id) DO UPDATE SET roll = excluded.roll
-                """,
-                (channel_id, user_id, roll),
-            )
 
     def delete_round(self, channel_id: int) -> None:
         with self._connect() as conn:
@@ -156,7 +169,8 @@ class StateStore:
                     message_id,
                     is_open,
                     highest_user,
-                    lowest_user
+                    lowest_user,
+                    reroll_user_ids
                 FROM active_rounds
                 WHERE is_open = 1
                 """
@@ -171,6 +185,7 @@ class StateStore:
                     is_open=bool(row["is_open"]),
                     highest_user=int(row["highest_user"]) if row["highest_user"] is not None else None,
                     lowest_user=int(row["lowest_user"]) if row["lowest_user"] is not None else None,
+                    reroll_user_ids=deserialize_user_ids(row["reroll_user_ids"]),
                 )
                 for row in round_rows
             }
@@ -199,11 +214,39 @@ class RiskyRollState:
     is_open: bool = True
     highest_user: int | None = None
     lowest_user: int | None = None
+    reroll_user_ids: set[int] = field(default_factory=set)
 
     def add_roll(self, user_id: int, value: int) -> None:
         self.rolls[user_id] = value
+        if self.reroll_user_ids:
+            completed_rerolls = {
+                reroll_user for reroll_user in self.reroll_user_ids if reroll_user in self.rolls
+            }
+            if completed_rerolls == self.reroll_user_ids:
+                self.reroll_user_ids.clear()
+
+    def can_roll(self, user_id: int) -> bool:
+        if self.reroll_user_ids:
+            return user_id in self.reroll_user_ids and user_id not in self.rolls
+        return user_id not in self.rolls
+
+    def prepare_reroll(self, user_ids: list[int]) -> None:
+        self.reroll_user_ids = set(user_ids)
+        for user_id in self.reroll_user_ids:
+            self.rolls.pop(user_id, None)
+        self.highest_user = None
+        self.lowest_user = None
+
+    def pending_reroll_mentions(self) -> str:
+        pending_user_ids = [user_id for user_id in self.reroll_user_ids if user_id not in self.rolls]
+        return ", ".join(f"<@{user_id}>" for user_id in pending_user_ids)
 
     def resolve(self) -> str:
+        if self.reroll_user_ids:
+            pending_user_ids = [user_id for user_id in self.reroll_user_ids if user_id not in self.rolls]
+            if pending_user_ids:
+                return "waiting_for_rerolls"
+
         if len(self.rolls) < 2:
             return "not_enough"
 
@@ -231,7 +274,13 @@ class RiskyRollState:
 
 def build_embed(state: RiskyRollState) -> discord.Embed:
     embed = discord.Embed(title="Risky Rolls", color=discord.Color.gold())
-    embed.description = "Press **Roll** to join this round." if state.is_open else "Round closed."
+    if state.is_open:
+        if state.reroll_user_ids:
+            embed.description = f"Waiting for {state.pending_reroll_mentions()} to reroll."
+        else:
+            embed.description = "Press **Roll** to join this round."
+    else:
+        embed.description = "Round closed."
 
     if not state.rolls:
         embed.add_field(name="Rolls (0)", value="No rolls yet.", inline=False)
@@ -250,6 +299,24 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
         embed.add_field(name="Result", value=result, inline=False)
 
     return embed
+
+
+async def disable_round_message(state: RiskyRollState, channel: discord.abc.GuildChannel | discord.Thread) -> None:
+    if state.message_id is None or not isinstance(channel, (discord.TextChannel, discord.Thread)):
+        return
+
+    try:
+        message = await channel.fetch_message(state.message_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return
+
+    view = RiskyRollView(state.channel_id)
+    view.disable_all_items()
+
+    try:
+        await message.edit(embed=build_embed(state), view=view)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return
 
 
 # ==============================
@@ -307,9 +374,17 @@ class RiskyRollView(discord.ui.View):
             await interaction.response.send_message("No open round to roll in.", ephemeral=True)
             return
 
+        if not state.can_roll(interaction.user.id):
+            if state.reroll_user_ids:
+                await interaction.response.send_message("You cannot reroll right now.", ephemeral=True)
+                return
+
+            await interaction.response.send_message("You already rolled this round.", ephemeral=True)
+            return
+
         roll = random.randint(1, 100)
         state.add_roll(interaction.user.id, roll)
-        bot.store.save_roll(self.channel_id, interaction.user.id, roll)
+        bot.store.save_round(state)
 
         await interaction.response.edit_message(embed=build_embed(state), view=self)
 
@@ -332,17 +407,29 @@ class RiskyRollView(discord.ui.View):
             return
 
         result = state.resolve()
+        if result == "waiting_for_rerolls":
+            await interaction.response.send_message(
+                f"Still waiting for {state.pending_reroll_mentions()} to reroll.",
+                allowed_mentions=discord.AllowedMentions(users=True),
+                ephemeral=True,
+            )
+            return
+
         if result == "not_enough":
             await interaction.response.send_message("At least 2 players must roll.", ephemeral=True)
             return
 
         if result == "tie":
             max_value = max(state.rolls.values())
-            tied_users = [f"<@{user_id}>" for user_id, roll in state.rolls.items() if roll == max_value]
+            tied_user_ids = [user_id for user_id, roll in state.rolls.items() if roll == max_value]
+            tied_users = [f"<@{user_id}>" for user_id in tied_user_ids]
+            state.prepare_reroll(tied_user_ids)
+            bot.store.save_round(state)
             await interaction.response.send_message(
                 f"Tie for highest roll ({max_value}).\n{', '.join(tied_users)} must reroll.",
                 allowed_mentions=discord.AllowedMentions(users=True),
             )
+            await interaction.message.edit(embed=build_embed(state), view=self)
             return
 
         self.disable_all_items()
@@ -446,6 +533,39 @@ async def risky_set_ping(interaction: discord.Interaction, role: discord.Role):
     await interaction.response.send_message(
         f"Ping role set to {role.mention}",
         allowed_mentions=discord.AllowedMentions(roles=True),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(
+    name="risky_reset_state",
+    description="Force-clear the active Risky Rolls round in this channel",
+)
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(administrator=True)
+async def risky_reset_state(interaction: discord.Interaction):
+    if interaction.channel is None:
+        await interaction.response.send_message(
+            "This command can only be used in a server channel.",
+            ephemeral=True,
+        )
+        return
+
+    state = active_games.pop(interaction.channel.id, None)
+    if state is None:
+        bot.store.delete_round(interaction.channel.id)
+        await interaction.response.send_message(
+            "No active round was found in this channel.",
+            ephemeral=True,
+        )
+        return
+
+    state.is_open = False
+    await disable_round_message(state, interaction.channel)
+    bot.store.delete_round(interaction.channel.id)
+
+    await interaction.response.send_message(
+        "Reset the active Risky Rolls state for this channel.",
         ephemeral=True,
     )
 
