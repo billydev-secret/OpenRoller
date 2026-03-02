@@ -1,7 +1,9 @@
+import asyncio
 import logging
 import os
 import random
 import sqlite3
+import weakref
 from dataclasses import dataclass, field
 
 import discord
@@ -16,10 +18,20 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 DEBUG_GUILD_ID = int(os.getenv("GUILD_ID")) if os.getenv("GUILD_ID") else None
 DATABASE_PATH = os.getenv("STATE_DB_PATH", "riskyroller.sqlite3")
 
+
+def get_bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 DEBUG = False  # Set True to sync commands only to DEBUG_GUILD_ID
+SYNC_COMMANDS_ON_STARTUP = get_bool_env("SYNC_COMMANDS_ON_STARTUP", default=True)
 
 ping_roles: dict[int, int] = {}  # {guild_id: role_id}
 active_games: dict[int, "RiskyRollState"] = {}  # {channel_id: RiskyRollState}
+channel_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = weakref.WeakValueDictionary()
 log = logging.getLogger("Risky Roller")
 
 logging.basicConfig(level=logging.INFO)
@@ -42,17 +54,26 @@ def deserialize_user_ids(raw: str | None) -> set[int]:
     return {int(part) for part in raw.split(",") if part}
 
 
+def get_channel_lock(channel_id: int) -> asyncio.Lock:
+    lock = channel_locks.get(channel_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        channel_locks[channel_id] = lock
+    return lock
+
+
 class StateStore:
     def __init__(self, path: str):
         self.path = path
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
-    def initialize(self) -> None:
+    def _initialize(self) -> None:
         with self._connect() as conn:
             conn.executescript(
                 """
@@ -89,14 +110,20 @@ class StateStore:
             if "reroll_user_ids" not in active_round_columns:
                 conn.execute("ALTER TABLE active_rounds ADD COLUMN reroll_user_ids TEXT")
 
-    def load_ping_roles(self) -> dict[int, int]:
+    async def initialize(self) -> None:
+        await asyncio.to_thread(self._initialize)
+
+    def _load_ping_roles(self) -> dict[int, int]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT guild_id, ping_role_id FROM guild_settings WHERE ping_role_id IS NOT NULL"
             ).fetchall()
         return {int(row["guild_id"]): int(row["ping_role_id"]) for row in rows}
 
-    def set_ping_role(self, guild_id: int, role_id: int) -> None:
+    async def load_ping_roles(self) -> dict[int, int]:
+        return await asyncio.to_thread(self._load_ping_roles)
+
+    def _set_ping_role(self, guild_id: int, role_id: int) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
@@ -107,7 +134,10 @@ class StateStore:
                 (guild_id, role_id),
             )
 
-    def save_round(self, state: "RiskyRollState") -> None:
+    async def set_ping_role(self, guild_id: int, role_id: int) -> None:
+        await asyncio.to_thread(self._set_ping_role, guild_id, role_id)
+
+    def _save_round(self, state: "RiskyRollState") -> None:
         with self._connect() as conn:
             conn.execute(
                 """
@@ -154,11 +184,17 @@ class StateStore:
                     (state.channel_id, user_id, roll),
                 )
 
-    def delete_round(self, channel_id: int) -> None:
+    async def save_round(self, state: "RiskyRollState") -> None:
+        await asyncio.to_thread(self._save_round, state)
+
+    def _delete_round(self, channel_id: int) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM active_rounds WHERE channel_id = ?", (channel_id,))
 
-    def load_active_rounds(self) -> list["RiskyRollState"]:
+    async def delete_round(self, channel_id: int) -> None:
+        await asyncio.to_thread(self._delete_round, channel_id)
+
+    def _load_active_rounds(self) -> list["RiskyRollState"]:
         with self._connect() as conn:
             round_rows = conn.execute(
                 """
@@ -202,6 +238,9 @@ class StateStore:
             state.rolls[int(row["user_id"])] = int(row["roll"])
 
         return list(states.values())
+
+    async def load_active_rounds(self) -> list["RiskyRollState"]:
+        return await asyncio.to_thread(self._load_active_rounds)
 
 
 @dataclass
@@ -330,15 +369,16 @@ class Bot(discord.Client):
         log.info("Bot is starting.")
 
     async def setup_hook(self):
-        self.store.initialize()
-        ping_roles.update(self.store.load_ping_roles())
+        await self.store.initialize()
+        ping_roles.update(await self.store.load_ping_roles())
 
-        for state in self.store.load_active_rounds():
-            active_games[state.channel_id] = state
+        for state in await self.store.load_active_rounds():
             if state.message_id is not None:
+                active_games[state.channel_id] = state
                 self.add_view(RiskyRollView(state.channel_id), message_id=state.message_id)
             else:
                 log.warning("Active round in channel %s is missing a message_id.", state.channel_id)
+                await self.store.delete_round(state.channel_id)
 
         if DEBUG:
             if DEBUG_GUILD_ID is None:
@@ -347,9 +387,11 @@ class Bot(discord.Client):
             self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
             log.info("Synced commands to development guild %s.", DEBUG_GUILD_ID)
-        else:
+        elif SYNC_COMMANDS_ON_STARTUP:
             await self.tree.sync()
             log.info("Synced commands globally.")
+        else:
+            log.info("Skipping global command sync on startup.")
 
 
 bot = Bot()
@@ -374,24 +416,25 @@ class RiskyRollView(discord.ui.View):
         custom_id="riskyroller:roll",
     )
     async def roll_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        state = active_games.get(self.channel_id)
-        if not state or not state.is_open:
-            await interaction.response.send_message("No open round to roll in.", ephemeral=True)
-            return
-
-        if not state.can_roll(interaction.user.id):
-            if state.reroll_user_ids:
-                await interaction.response.send_message("You cannot reroll right now.", ephemeral=True)
+        async with get_channel_lock(self.channel_id):
+            state = active_games.get(self.channel_id)
+            if not state or not state.is_open:
+                await interaction.response.send_message("No open round to roll in.", ephemeral=True)
                 return
 
-            await interaction.response.send_message("You already rolled this round.", ephemeral=True)
-            return
+            if not state.can_roll(interaction.user.id):
+                if state.reroll_user_ids:
+                    await interaction.response.send_message("You cannot reroll right now.", ephemeral=True)
+                    return
 
-        roll = random.randint(1, 100)
-        state.add_roll(interaction.user.id, roll)
-        bot.store.save_round(state)
+                await interaction.response.send_message("You already rolled this round.", ephemeral=True)
+                return
 
-        await interaction.response.edit_message(embed=build_embed(state), view=self)
+            roll = random.randint(1, 100)
+            state.add_roll(interaction.user.id, roll)
+            await bot.store.save_round(state)
+
+            await interaction.response.edit_message(embed=build_embed(state), view=self)
 
     @discord.ui.button(
         label="Close Round",
@@ -399,61 +442,90 @@ class RiskyRollView(discord.ui.View):
         custom_id="riskyroller:close",
     )
     async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        state = active_games.get(self.channel_id)
-        if not state:
-            await interaction.response.send_message("No active game.", ephemeral=True)
-            return
+        async with get_channel_lock(self.channel_id):
+            state = active_games.get(self.channel_id)
+            if not state or not state.is_open:
+                await interaction.response.send_message("No active game.", ephemeral=True)
+                return
 
-        if interaction.user.id != state.opener_id:
-            await interaction.response.send_message(
-                "Only the round opener can close this round.",
-                ephemeral=True,
-            )
-            return
+            if interaction.user.id != state.opener_id:
+                await interaction.response.send_message(
+                    "Only the round opener can close this round.",
+                    ephemeral=True,
+                )
+                return
 
-        result = state.resolve()
-        if result == "waiting_for_rerolls":
-            await interaction.response.send_message(
-                f"Still waiting for {state.pending_reroll_mentions()} to reroll.",
-                allowed_mentions=discord.AllowedMentions(users=True),
-                ephemeral=True,
-            )
-            return
+            previous_highest_user = state.highest_user
+            previous_lowest_user = state.lowest_user
+            previous_is_open = state.is_open
+            result = state.resolve()
+            if result == "waiting_for_rerolls":
+                await interaction.response.send_message(
+                    f"Still waiting for {state.pending_reroll_mentions()} to reroll.",
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                    ephemeral=True,
+                )
+                return
 
-        if result == "not_enough":
-            await interaction.response.send_message("At least 2 players must roll.", ephemeral=True)
-            return
+            if result == "not_enough":
+                await interaction.response.send_message("At least 2 players must roll.", ephemeral=True)
+                return
 
-        if result == "tie":
-            max_value = max(state.rolls.values())
-            tied_user_ids = [user_id for user_id, roll in state.rolls.items() if roll == max_value]
-            tied_users = [f"<@{user_id}>" for user_id in tied_user_ids]
-            state.prepare_reroll(tied_user_ids)
-            bot.store.save_round(state)
-            await interaction.response.send_message(
-                f"Tie for highest roll ({max_value}).\n{', '.join(tied_users)} must reroll.",
-                allowed_mentions=discord.AllowedMentions(users=True),
-            )
-            await interaction.message.edit(embed=build_embed(state), view=self)
-            return
+            if result == "tie":
+                max_value = max(state.rolls.values())
+                tied_user_ids = [user_id for user_id, roll in state.rolls.items() if roll == max_value]
+                tied_users = [f"<@{user_id}>" for user_id in tied_user_ids]
+                state.prepare_reroll(tied_user_ids)
+                await bot.store.save_round(state)
+                await interaction.response.send_message(
+                    f"Tie for highest roll ({max_value}).\n{', '.join(tied_users)} must reroll.",
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
+                await interaction.message.edit(embed=build_embed(state), view=self)
+                return
 
-        self.disable_all_items()
-        await interaction.response.edit_message(embed=build_embed(state), view=self)
+            closed_view = RiskyRollView(self.channel_id)
+            closed_view.disable_all_items()
 
-        bot.store.delete_round(self.channel_id)
-        del active_games[self.channel_id]
+            await bot.store.save_round(state)
 
-        if result == "sixtynine":
+            try:
+                await interaction.response.edit_message(embed=build_embed(state), view=closed_view)
+            except discord.HTTPException:
+                state.highest_user = previous_highest_user
+                state.lowest_user = previous_lowest_user
+                state.is_open = previous_is_open
+                await bot.store.save_round(state)
+                log.exception("Failed to close round in channel %s.", self.channel_id)
+                try:
+                    if interaction.response.is_done():
+                        await interaction.followup.send(
+                            "Failed to close the round. Please try again.",
+                            ephemeral=True,
+                        )
+                    else:
+                        await interaction.response.send_message(
+                            "Failed to close the round. Please try again.",
+                            ephemeral=True,
+                        )
+                except discord.HTTPException:
+                    pass
+                return
+
+            active_games.pop(self.channel_id, None)
+            await bot.store.delete_round(self.channel_id)
+
+            if result == "sixtynine":
+                await interaction.followup.send(
+                    content=f"69 rolled.\n<@{state.highest_user}> asks one shared question for everyone.",
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
+                return
+
             await interaction.followup.send(
-                content=f"69 rolled.\n<@{state.highest_user}> asks one shared question for everyone.",
+                content=f"<@{state.highest_user}> asks\n<@{state.lowest_user}> answers",
                 allowed_mentions=discord.AllowedMentions(users=True),
             )
-            return
-
-        await interaction.followup.send(
-            content=f"<@{state.highest_user}> asks\n<@{state.lowest_user}> answers",
-            allowed_mentions=discord.AllowedMentions(users=True),
-        )
 
 
 # ==============================
@@ -477,45 +549,64 @@ async def risky_start(interaction: discord.Interaction):
         )
         return
 
-    if interaction.channel.id in active_games:
-        await interaction.response.send_message(
-            "A game is already active in this channel.",
-            ephemeral=True,
+    async with get_channel_lock(interaction.channel.id):
+        if interaction.channel.id in active_games:
+            await interaction.response.send_message(
+                "A game is already active in this channel.",
+                ephemeral=True,
+            )
+            return
+
+        state = RiskyRollState(
+            channel_id=interaction.channel.id,
+            guild_id=interaction.guild.id,
+            opener_id=interaction.user.id,
         )
-        return
+        active_games[interaction.channel.id] = state
+        await bot.store.save_round(state)
 
-    state = RiskyRollState(
-        channel_id=interaction.channel.id,
-        guild_id=interaction.guild.id,
-        opener_id=interaction.user.id,
-    )
-    active_games[interaction.channel.id] = state
-    bot.store.save_round(state)
+        role_id = ping_roles.get(interaction.guild.id)
+        content = None
+        allowed_mentions = discord.AllowedMentions.none()
 
-    role_id = ping_roles.get(interaction.guild.id)
-    content = None
-    allowed_mentions = discord.AllowedMentions.none()
+        if role_id:
+            content = f"# <@&{role_id}> A new Risky Rolls round has begun!"
+            allowed_mentions = discord.AllowedMentions(roles=True)
 
-    if role_id:
-        content = f"# <@&{role_id}> A new Risky Rolls round has begun!"
-        allowed_mentions = discord.AllowedMentions(roles=True)
+        view = RiskyRollView(interaction.channel.id)
+        try:
+            await interaction.response.send_message(
+                content=content,
+                embed=build_embed(state),
+                view=view,
+                allowed_mentions=allowed_mentions,
+            )
+            message = await interaction.original_response()
+            state.message_id = message.id
+            await bot.store.save_round(state)
+        except Exception:
+            active_games.pop(interaction.channel.id, None)
+            await bot.store.delete_round(interaction.channel.id)
+            state.is_open = False
 
-    view = RiskyRollView(interaction.channel.id)
-    try:
-        await interaction.response.send_message(
-            content=content,
-            embed=build_embed(state),
-            view=view,
-            allowed_mentions=allowed_mentions,
-        )
-    except Exception:
-        active_games.pop(interaction.channel.id, None)
-        bot.store.delete_round(interaction.channel.id)
-        raise
-
-    message = await interaction.original_response()
-    state.message_id = message.id
-    bot.store.save_round(state)
+            if interaction.response.is_done():
+                try:
+                    message = await interaction.original_response()
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+                else:
+                    failed_view = RiskyRollView(interaction.channel.id)
+                    failed_view.disable_all_items()
+                    try:
+                        await message.edit(
+                            content="Risky Rolls could not finish setup. Start a new round.",
+                            embed=build_embed(state),
+                            view=failed_view,
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        pass
+            raise
 
 
 @bot.tree.command(
@@ -533,7 +624,7 @@ async def risky_set_ping(interaction: discord.Interaction, role: discord.Role):
         return
 
     ping_roles[interaction.guild.id] = role.id
-    bot.store.set_ping_role(interaction.guild.id, role.id)
+    await bot.store.set_ping_role(interaction.guild.id, role.id)
 
     await interaction.response.send_message(
         f"Ping role set to {role.mention}",
@@ -556,23 +647,55 @@ async def risky_reset_state(interaction: discord.Interaction):
         )
         return
 
-    state = active_games.pop(interaction.channel.id, None)
-    if state is None:
-        bot.store.delete_round(interaction.channel.id)
+    async with get_channel_lock(interaction.channel.id):
+        state = active_games.pop(interaction.channel.id, None)
+        if state is None:
+            await bot.store.delete_round(interaction.channel.id)
+            await interaction.response.send_message(
+                "No active round was found in this channel.",
+                ephemeral=True,
+            )
+            return
+
+        state.is_open = False
+        await disable_round_message(state, interaction.channel)
+        await bot.store.delete_round(interaction.channel.id)
+
         await interaction.response.send_message(
-            "No active round was found in this channel.",
+            "Reset the active Risky Rolls state for this channel.",
             ephemeral=True,
         )
+
+
+@bot.tree.error
+async def on_app_command_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError,
+) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                "You do not have permission to use that command.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "You do not have permission to use that command.",
+                ephemeral=True,
+            )
         return
 
-    state.is_open = False
-    await disable_round_message(state, interaction.channel)
-    bot.store.delete_round(interaction.channel.id)
-
-    await interaction.response.send_message(
-        "Reset the active Risky Rolls state for this channel.",
-        ephemeral=True,
-    )
+    log.exception("Unhandled app command error", exc_info=error)
+    if interaction.response.is_done():
+        await interaction.followup.send(
+            "The command failed. Check the bot logs for details.",
+            ephemeral=True,
+        )
+    else:
+        await interaction.response.send_message(
+            "The command failed. Check the bot logs for details.",
+            ephemeral=True,
+        )
 
 
 # ==============================
