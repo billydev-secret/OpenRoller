@@ -363,6 +363,11 @@ class RiskyRollView(discord.ui.View):
         super().__init__(timeout=None)
         self.channel_id = channel_id
 
+    def disable_all_items(self) -> None:
+        for item in self.children:
+            if hasattr(item, "disabled"):
+                item.disabled = True
+
     @discord.ui.button(
         label="Roll",
         style=discord.ButtonStyle.primary,
