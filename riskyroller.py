@@ -31,6 +31,7 @@ SYNC_COMMANDS_ON_STARTUP = get_bool_env("SYNC_COMMANDS_ON_STARTUP", default=True
 
 ping_roles: dict[int, int] = {}  # {guild_id: role_id}
 active_games: dict[int, "RiskyRollState"] = {}  # {channel_id: RiskyRollState}
+pending_questions: dict[int, "PendingQuestionState"] = {}  # {channel_id: PendingQuestionState}
 channel_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = weakref.WeakValueDictionary()
 log = logging.getLogger("Risky Roller")
 
@@ -60,6 +61,32 @@ def get_channel_lock(channel_id: int) -> asyncio.Lock:
         lock = asyncio.Lock()
         channel_locks[channel_id] = lock
     return lock
+
+
+def format_user_mentions(user_ids: set[int]) -> str:
+    return " ".join(f"<@{user_id}>" for user_id in sorted(user_ids))
+
+
+def build_pending_prompt_content(state: "PendingQuestionState") -> str:
+    if state.prompt_kind == "direct":
+        target_mentions = format_user_mentions(state.participant_user_ids)
+        return (
+            f"<@{state.winner_id}> won the round.\n"
+            f"Click **Ask Question** to send your question to {target_mentions}."
+        )
+
+    return (
+        f"<@{state.winner_id}> rolled 69 and wins.\n"
+        "Click **Ask Question** to send your question to everyone who rolled."
+    )
+
+
+def build_pending_question_summary(state: "PendingQuestionState", question_text: str) -> str:
+    if state.prompt_kind == "direct":
+        target_mentions = format_user_mentions(state.participant_user_ids)
+        return f"<@{state.winner_id}> asked {target_mentions}:\n{question_text}"
+
+    return f"<@{state.winner_id}> rolled 69 and asked:\n{question_text}"
 
 
 class StateStore:
@@ -100,6 +127,15 @@ class StateStore:
                     PRIMARY KEY (channel_id, user_id),
                     FOREIGN KEY (channel_id) REFERENCES active_rounds(channel_id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS pending_questions (
+                    channel_id INTEGER PRIMARY KEY,
+                    guild_id INTEGER NOT NULL,
+                    winner_id INTEGER NOT NULL,
+                    prompt_message_id INTEGER,
+                    participant_user_ids TEXT NOT NULL,
+                    prompt_kind TEXT NOT NULL DEFAULT 'room'
+                );
                 """
             )
 
@@ -109,6 +145,15 @@ class StateStore:
             }
             if "reroll_user_ids" not in active_round_columns:
                 conn.execute("ALTER TABLE active_rounds ADD COLUMN reroll_user_ids TEXT")
+
+            pending_question_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(pending_questions)").fetchall()
+            }
+            if "prompt_kind" not in pending_question_columns:
+                conn.execute(
+                    "ALTER TABLE pending_questions ADD COLUMN prompt_kind TEXT NOT NULL DEFAULT 'room'"
+                )
 
     async def initialize(self) -> None:
         await asyncio.to_thread(self._initialize)
@@ -194,6 +239,46 @@ class StateStore:
     async def delete_round(self, channel_id: int) -> None:
         await asyncio.to_thread(self._delete_round, channel_id)
 
+    def _save_pending_question(self, state: "PendingQuestionState") -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pending_questions (
+                    channel_id,
+                    guild_id,
+                    winner_id,
+                    prompt_message_id,
+                    participant_user_ids,
+                    prompt_kind
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(channel_id) DO UPDATE SET
+                    guild_id = excluded.guild_id,
+                    winner_id = excluded.winner_id,
+                    prompt_message_id = excluded.prompt_message_id,
+                    participant_user_ids = excluded.participant_user_ids,
+                    prompt_kind = excluded.prompt_kind
+                """,
+                (
+                    state.channel_id,
+                    state.guild_id,
+                    state.winner_id,
+                    state.prompt_message_id,
+                    serialize_user_ids(state.participant_user_ids),
+                    state.prompt_kind,
+                ),
+            )
+
+    async def save_pending_question(self, state: "PendingQuestionState") -> None:
+        await asyncio.to_thread(self._save_pending_question, state)
+
+    def _delete_pending_question(self, channel_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM pending_questions WHERE channel_id = ?", (channel_id,))
+
+    async def delete_pending_question(self, channel_id: int) -> None:
+        await asyncio.to_thread(self._delete_pending_question, channel_id)
+
     def _load_active_rounds(self) -> list["RiskyRollState"]:
         with self._connect() as conn:
             round_rows = conn.execute(
@@ -241,6 +326,38 @@ class StateStore:
 
     async def load_active_rounds(self) -> list["RiskyRollState"]:
         return await asyncio.to_thread(self._load_active_rounds)
+
+    def _load_pending_questions(self) -> list["PendingQuestionState"]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    channel_id,
+                    guild_id,
+                    winner_id,
+                    prompt_message_id,
+                    participant_user_ids,
+                    prompt_kind
+                FROM pending_questions
+                """
+            ).fetchall()
+
+        return [
+            PendingQuestionState(
+                channel_id=int(row["channel_id"]),
+                guild_id=int(row["guild_id"]),
+                winner_id=int(row["winner_id"]),
+                prompt_message_id=(
+                    int(row["prompt_message_id"]) if row["prompt_message_id"] is not None else None
+                ),
+                participant_user_ids=deserialize_user_ids(row["participant_user_ids"]),
+                prompt_kind=str(row["prompt_kind"] or "room"),
+            )
+            for row in rows
+        ]
+
+    async def load_pending_questions(self) -> list["PendingQuestionState"]:
+        return await asyncio.to_thread(self._load_pending_questions)
 
 
 @dataclass
@@ -311,6 +428,16 @@ class RiskyRollState:
         return "ok"
 
 
+@dataclass
+class PendingQuestionState:
+    channel_id: int
+    guild_id: int
+    winner_id: int
+    participant_user_ids: set[int]
+    prompt_message_id: int | None = None
+    prompt_kind: str = "room"
+
+
 def build_embed(state: RiskyRollState) -> discord.Embed:
     embed = discord.Embed(title="Risky Rolls", color=discord.Color.gold())
     if state.is_open:
@@ -332,7 +459,7 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
     if not state.is_open and state.highest_user:
         high_mention = f"<@{state.highest_user}>"
         if state.lowest_user is None:
-            result = f"69 rolled.\n{high_mention} asks one shared question for everyone."
+            result = f"69 rolled.\n{high_mention} wins and asks the room a question."
         else:
             result = f"{high_mention} asks\n<@{state.lowest_user}> answers"
         embed.add_field(name="Result", value=result, inline=False)
@@ -358,6 +485,47 @@ async def disable_round_message(state: RiskyRollState, channel: discord.abc.Guil
         return
 
 
+async def get_text_channel(
+    channel_id: int,
+) -> discord.TextChannel | discord.Thread | None:
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+
+    if isinstance(channel, (discord.TextChannel, discord.Thread)):
+        return channel
+
+    return None
+
+
+async def disable_pending_question_message(
+    state: PendingQuestionState,
+    content: str,
+) -> None:
+    if state.prompt_message_id is None:
+        return
+
+    channel = await get_text_channel(state.channel_id)
+    if channel is None:
+        return
+
+    try:
+        message = await channel.fetch_message(state.prompt_message_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return
+
+    view = SixtyNineQuestionView(state.channel_id)
+    view.disable_all_items()
+
+    try:
+        await message.edit(content=content, view=view, allowed_mentions=discord.AllowedMentions.none())
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return
+
+
 # ==============================
 # Bot Class
 # ==============================
@@ -379,6 +547,17 @@ class Bot(discord.Client):
             else:
                 log.warning("Active round in channel %s is missing a message_id.", state.channel_id)
                 await self.store.delete_round(state.channel_id)
+
+        for state in await self.store.load_pending_questions():
+            if state.prompt_message_id is not None:
+                pending_questions[state.channel_id] = state
+                self.add_view(SixtyNineQuestionView(state.channel_id), message_id=state.prompt_message_id)
+            else:
+                log.warning(
+                    "Pending 69 question in channel %s is missing a prompt_message_id.",
+                    state.channel_id,
+                )
+                await self.store.delete_pending_question(state.channel_id)
 
         if DEBUG:
             if DEBUG_GUILD_ID is None:
@@ -516,16 +695,182 @@ class RiskyRollView(discord.ui.View):
             await bot.store.delete_round(self.channel_id)
 
             if result == "sixtynine":
-                await interaction.followup.send(
-                    content=f"69 rolled.\n<@{state.highest_user}> asks one shared question for everyone.",
+                prompt_state = PendingQuestionState(
+                    channel_id=self.channel_id,
+                    guild_id=state.guild_id,
+                    winner_id=state.highest_user,
+                    participant_user_ids=set(state.rolls),
+                    prompt_kind="room",
+                )
+                question_view = SixtyNineQuestionView(self.channel_id)
+                prompt_message: discord.WebhookMessage | None = None
+
+                try:
+                    prompt_message = await interaction.followup.send(
+                        content=build_pending_prompt_content(prompt_state),
+                        allowed_mentions=discord.AllowedMentions(users=True),
+                        view=question_view,
+                        wait=True,
+                    )
+                    prompt_state.prompt_message_id = prompt_message.id
+                    pending_questions[self.channel_id] = prompt_state
+                    await bot.store.save_pending_question(prompt_state)
+                except Exception:
+                    pending_questions.pop(self.channel_id, None)
+                    await bot.store.delete_pending_question(self.channel_id)
+                    if prompt_message is not None:
+                        await disable_pending_question_message(
+                            prompt_state,
+                            "Risky Rolls could not prepare the 69 question prompt. Start a new round.",
+                        )
+                    raise
+                return
+
+            prompt_state = PendingQuestionState(
+                channel_id=self.channel_id,
+                guild_id=state.guild_id,
+                winner_id=state.highest_user,
+                participant_user_ids={state.lowest_user} if state.lowest_user is not None else set(),
+                prompt_kind="direct",
+            )
+            question_view = SixtyNineQuestionView(self.channel_id)
+            prompt_message = None
+
+            try:
+                prompt_message = await interaction.followup.send(
+                    content=build_pending_prompt_content(prompt_state),
                     allowed_mentions=discord.AllowedMentions(users=True),
+                    view=question_view,
+                    wait=True,
+                )
+                prompt_state.prompt_message_id = prompt_message.id
+                pending_questions[self.channel_id] = prompt_state
+                await bot.store.save_pending_question(prompt_state)
+            except Exception:
+                pending_questions.pop(self.channel_id, None)
+                await bot.store.delete_pending_question(self.channel_id)
+                if prompt_message is not None:
+                    await disable_pending_question_message(
+                        prompt_state,
+                        "Risky Rolls could not prepare the winner question prompt. Start a new round.",
+                    )
+                raise
+
+
+class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
+    question = discord.ui.TextInput(
+        label="Your question",
+        placeholder="Type the question you want to send.",
+        style=discord.TextStyle.paragraph,
+        max_length=300,
+    )
+
+    def __init__(self, channel_id: int):
+        super().__init__()
+        self.channel_id = channel_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        async with get_channel_lock(self.channel_id):
+            state = pending_questions.get(self.channel_id)
+            if state is None:
+                await interaction.response.send_message(
+                    "There is no pending winner question for this channel.",
+                    ephemeral=True,
                 )
                 return
 
-            await interaction.followup.send(
-                content=f"<@{state.highest_user}> asks\n<@{state.lowest_user}> answers",
-                allowed_mentions=discord.AllowedMentions(users=True),
+            if interaction.user.id != state.winner_id:
+                await interaction.response.send_message(
+                    "Only the round winner can send that question.",
+                    ephemeral=True,
+                )
+                return
+
+            question_text = self.question.value.strip()
+            if not question_text:
+                await interaction.response.send_message(
+                    "Enter a question before sending it.",
+                    ephemeral=True,
+                )
+                return
+
+            channel = await get_text_channel(state.channel_id)
+            if channel is None:
+                await interaction.response.send_message(
+                    "I could not find the channel for that round.",
+                    ephemeral=True,
+                )
+                return
+
+            if state.prompt_kind == "direct":
+                recipient_mentions = format_user_mentions(state.participant_user_ids)
+                prefix = f"{recipient_mentions}\n" if recipient_mentions else ""
+            else:
+                recipient_mentions = format_user_mentions(state.participant_user_ids - {state.winner_id})
+                prefix = f"{recipient_mentions}\n" if recipient_mentions else ""
+
+            try:
+                await channel.send(
+                    content=f"{prefix}<@{state.winner_id}> asks:\n{question_text}",
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
+            except discord.HTTPException:
+                await interaction.response.send_message(
+                    "I could not send the question. Please try again.",
+                    ephemeral=True,
+                )
+                return
+
+            pending_questions.pop(self.channel_id, None)
+            await bot.store.delete_pending_question(self.channel_id)
+            await disable_pending_question_message(
+                state,
+                build_pending_question_summary(state, question_text),
             )
+            if state.prompt_kind == "direct":
+                confirmation = "Question sent to the selected player."
+            else:
+                confirmation = "Question sent to everyone who rolled."
+            await interaction.response.send_message(confirmation, ephemeral=True)
+
+
+class SixtyNineQuestionView(discord.ui.View):
+    def __init__(self, channel_id: int):
+        super().__init__(timeout=None)
+        self.channel_id = channel_id
+
+    def disable_all_items(self) -> None:
+        for item in self.children:
+            if hasattr(item, "disabled"):
+                item.disabled = True
+
+    @discord.ui.button(
+        label="Ask Question",
+        style=discord.ButtonStyle.success,
+        custom_id="riskyroller:ask_question",
+    )
+    async def ask_question_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        async with get_channel_lock(self.channel_id):
+            state = pending_questions.get(self.channel_id)
+            if state is None:
+                await interaction.response.send_message(
+                    "There is no pending winner question for this channel.",
+                    ephemeral=True,
+                )
+                return
+
+            if interaction.user.id != state.winner_id:
+                await interaction.response.send_message(
+                    "Only the round winner can send that question.",
+                    ephemeral=True,
+                )
+                return
+
+        await interaction.response.send_modal(SixtyNineQuestionModal(self.channel_id))
 
 
 # ==============================
@@ -649,20 +994,31 @@ async def risky_reset_state(interaction: discord.Interaction):
 
     async with get_channel_lock(interaction.channel.id):
         state = active_games.pop(interaction.channel.id, None)
-        if state is None:
+        pending_state = pending_questions.pop(interaction.channel.id, None)
+
+        if state is None and pending_state is None:
             await bot.store.delete_round(interaction.channel.id)
+            await bot.store.delete_pending_question(interaction.channel.id)
             await interaction.response.send_message(
-                "No active round was found in this channel.",
+                "No active or pending Risky Rolls state was found in this channel.",
                 ephemeral=True,
             )
             return
 
-        state.is_open = False
-        await disable_round_message(state, interaction.channel)
-        await bot.store.delete_round(interaction.channel.id)
+        if state is not None:
+            state.is_open = False
+            await disable_round_message(state, interaction.channel)
+            await bot.store.delete_round(interaction.channel.id)
+
+        if pending_state is not None:
+            await disable_pending_question_message(
+                pending_state,
+                "The pending 69 question prompt was cleared by an administrator.",
+            )
+            await bot.store.delete_pending_question(interaction.channel.id)
 
         await interaction.response.send_message(
-            "Reset the active Risky Rolls state for this channel.",
+            "Reset the Risky Rolls state for this channel.",
             ephemeral=True,
         )
 
