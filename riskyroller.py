@@ -794,14 +794,6 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 )
                 return
 
-            channel = await get_text_channel(state.channel_id)
-            if channel is None:
-                await interaction.response.send_message(
-                    "I could not find the channel for that round.",
-                    ephemeral=True,
-                )
-                return
-
             if state.prompt_kind == "direct":
                 recipient_mentions = format_user_mentions(state.participant_user_ids)
                 prefix = f"{recipient_mentions}\n" if recipient_mentions else ""
@@ -809,13 +801,17 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 recipient_mentions = format_user_mentions(state.participant_user_ids - {state.winner_id})
                 prefix = f"{recipient_mentions}\n" if recipient_mentions else ""
 
+            await interaction.response.defer(ephemeral=True)
+
             try:
-                await channel.send(
+                await interaction.followup.send(
                     content=f"{prefix}<@{state.winner_id}> asks:\n{question_text}",
                     allowed_mentions=discord.AllowedMentions(users=True),
+                    ephemeral=False,
                 )
             except discord.HTTPException:
-                await interaction.response.send_message(
+                log.exception("Failed to deliver winner question in channel %s.", self.channel_id)
+                await interaction.followup.send(
                     "I could not send the question. Please try again.",
                     ephemeral=True,
                 )
@@ -831,7 +827,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 confirmation = "Question sent to the selected player."
             else:
                 confirmation = "Question sent to everyone who rolled."
-            await interaction.response.send_message(confirmation, ephemeral=True)
+            await interaction.followup.send(confirmation, ephemeral=True)
 
 
 class SixtyNineQuestionView(discord.ui.View):
