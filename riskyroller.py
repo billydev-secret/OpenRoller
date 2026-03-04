@@ -393,6 +393,9 @@ class RiskyRollState:
         self.highest_user = None
         self.lowest_user = None
 
+    def reroll_mentions(self) -> str:
+        return ", ".join(f"<@{user_id}>" for user_id in sorted(self.reroll_user_ids))
+
     def pending_reroll_mentions(self) -> str:
         pending_user_ids = [user_id for user_id in self.reroll_user_ids if user_id not in self.rolls]
         return ", ".join(f"<@{user_id}>" for user_id in pending_user_ids)
@@ -442,7 +445,7 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
     embed = discord.Embed(title="Risky Rolls", color=discord.Color.gold())
     if state.is_open:
         if state.reroll_user_ids:
-            embed.description = f"Waiting for {state.pending_reroll_mentions()} to reroll."
+            embed.description = "Tie for highest roll. Tied players must reroll."
         else:
             embed.description = "Press **Roll** to join this round."
     else:
@@ -450,11 +453,26 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
 
     if not state.rolls:
         embed.add_field(name="Rolls (0)", value="No rolls yet.", inline=False)
+        if state.reroll_user_ids:
+            reroll_text = f"Tied users: {state.reroll_mentions()}"
+            pending_mentions = state.pending_reroll_mentions()
+            if pending_mentions:
+                reroll_text += f"\nWaiting on: {pending_mentions}"
+            embed.add_field(name="Reroll", value=reroll_text, inline=False)
         return embed
 
     sorted_rolls = sorted(state.rolls.items(), key=lambda item: item[1], reverse=True)
     lines = [f"**{roll}** - <@{user_id}>" for user_id, roll in sorted_rolls]
     embed.add_field(name=f"Rolls ({len(state.rolls)})", value="\n".join(lines), inline=False)
+
+    if state.reroll_user_ids:
+        reroll_text = f"Tied users: {state.reroll_mentions()}"
+        pending_mentions = state.pending_reroll_mentions()
+        if pending_mentions:
+            reroll_text += f"\nWaiting on: {pending_mentions}"
+        else:
+            reroll_text += "\nAll rerolls are in. Close the round again."
+        embed.add_field(name="Reroll", value=reroll_text, inline=False)
 
     if not state.is_open and state.highest_user:
         high_mention = f"<@{state.highest_user}>"
@@ -653,14 +671,9 @@ class RiskyRollView(discord.ui.View):
             if result == "tie":
                 max_value = max(state.rolls.values())
                 tied_user_ids = [user_id for user_id, roll in state.rolls.items() if roll == max_value]
-                tied_users = [f"<@{user_id}>" for user_id in tied_user_ids]
                 state.prepare_reroll(tied_user_ids)
                 await bot.store.save_round(state)
-                await interaction.response.send_message(
-                    f"Tie for highest roll ({max_value}).\n{', '.join(tied_users)} must reroll.",
-                    allowed_mentions=discord.AllowedMentions(users=True),
-                )
-                await interaction.message.edit(embed=build_embed(state), view=self)
+                await interaction.response.edit_message(embed=build_embed(state), view=self)
                 return
 
             closed_view = RiskyRollView(self.channel_id)
