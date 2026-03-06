@@ -893,7 +893,10 @@ async def on_ready():
 # ==============================
 # Commands
 # ==============================
-@bot.tree.command(name="risky_start", description="Start a Risky Rolls round")
+@bot.tree.command(
+    name="risky_start",
+    description="Open a new Risky Rolls round in this channel",
+)
 @app_commands.guild_only()
 async def risky_start(interaction: discord.Interaction):
     if interaction.guild is None or interaction.channel is None:
@@ -965,10 +968,11 @@ async def risky_start(interaction: discord.Interaction):
 
 @bot.tree.command(
     name="risky_set_ping",
-    description="Set the role to ping when a new Risky Roll starts",
+    description="Set the role pinged when a new round starts",
 )
 @app_commands.guild_only()
 @app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(role="Role to mention at the start of each new round")
 async def risky_set_ping(interaction: discord.Interaction, role: discord.Role):
     if interaction.guild is None:
         await interaction.response.send_message(
@@ -989,7 +993,7 @@ async def risky_set_ping(interaction: discord.Interaction, role: discord.Role):
 
 @bot.tree.command(
     name="risky_reset_state",
-    description="Force-clear the active Risky Rolls round in this channel",
+    description="Clear active round and pending prompts in this channel",
 )
 @app_commands.guild_only()
 @app_commands.checks.has_permissions(administrator=True)
