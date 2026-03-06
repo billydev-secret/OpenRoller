@@ -418,7 +418,7 @@ class RiskyRollState:
 
         sixtyniners = [user_id for user_id, roll in self.rolls.items() if roll == 69]
         if sixtyniners:
-            self.highest_user = highest_users[0]
+            self.highest_user = sixtyniners[0]
             self.lowest_user = None
             self.is_open = False
             return "sixtynine"
