@@ -446,16 +446,16 @@ class RiskyRollState:
         max_value = max(self.rolls.values())
         min_value = min(self.rolls.values())
 
-        highest_users = [user_id for user_id, roll in self.rolls.items() if roll == max_value]
-        if len(highest_users) > 1:
-            return "tie"
-
         sixtyniners = [user_id for user_id, roll in self.rolls.items() if roll == 69]
         if sixtyniners:
             self.highest_user = sixtyniners[0]
             self.lowest_user = None
             self.is_open = False
             return "sixtynine"
+
+        highest_users = [user_id for user_id, roll in self.rolls.items() if roll == max_value]
+        if len(highest_users) > 1:
+            return "tie"
 
         lowest_users = [user_id for user_id, roll in self.rolls.items() if roll == min_value]
 
