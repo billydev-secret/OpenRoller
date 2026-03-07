@@ -35,7 +35,6 @@ class RiskyRollStateTests(unittest.TestCase):
         result = state.resolve()
 
         self.assertEqual(RoundResult.NOT_ENOUGH, result.result_type)
-        # Note: resolve() no longer mutates state
         self.assertTrue(state.is_open)
         self.assertIsNone(state.highest_user)
         self.assertIsNone(state.lowest_user)
@@ -56,10 +55,11 @@ class RiskyRollStateTests(unittest.TestCase):
         result = state.resolve()
 
         self.assertEqual(RoundResult.TIE, result.result_type)
-        self.assertEqual([1, 2], sorted(result.tied_user_ids))
-        self.assertTrue(state.is_open)
-        self.assertIsNone(state.highest_user)
-        self.assertIsNone(state.lowest_user)
+        self.assertEqual([1, 2], sorted(result.rolloff_user_ids))
+        self.assertIsNotNone(result.rolloff_rounds)
+        self.assertFalse(state.is_open)
+        self.assertIsNotNone(state.highest_user)
+        self.assertIsNotNone(state.lowest_user)
 
     def test_resolve_sixtynine_closes_round_and_sets_winner(self) -> None:
         state = self.make_state(rolls={10: 12, 20: 69, 30: 98})
@@ -67,11 +67,9 @@ class RiskyRollStateTests(unittest.TestCase):
         result = state.resolve()
 
         self.assertEqual(RoundResult.SIXTYNINE, result.result_type)
-        self.assertEqual(20, result.highest_user)
-        # Note: resolve() no longer mutates state
-        self.assertTrue(state.is_open)
-        self.assertIsNone(state.highest_user)
+        self.assertEqual(20, state.highest_user)
         self.assertIsNone(state.lowest_user)
+        self.assertFalse(state.is_open)
 
     def test_resolve_ok_sets_highest_lowest_and_closes_round(self) -> None:
         state = self.make_state(rolls={1: 93, 2: 18, 3: 50})
@@ -79,10 +77,9 @@ class RiskyRollStateTests(unittest.TestCase):
         result = state.resolve()
 
         self.assertEqual(RoundResult.OK, result.result_type)
-        self.assertEqual(1, result.highest_user)
-        self.assertEqual(2, result.lowest_user)
-        # Note: resolve() no longer mutates state
-        self.assertTrue(state.is_open)
+        self.assertEqual(1, state.highest_user)
+        self.assertEqual(2, state.lowest_user)
+        self.assertFalse(state.is_open)
 
     def test_prepare_reroll_removes_tied_rolls_and_resets_result(self) -> None:
         state = self.make_state(rolls={1: 100, 2: 100, 3: 8})
