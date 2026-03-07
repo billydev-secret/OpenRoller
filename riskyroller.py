@@ -5,6 +5,7 @@ import random
 import sqlite3
 import weakref
 from dataclasses import dataclass, field
+from enum import Enum, auto
 
 import discord
 from discord import app_commands
@@ -37,6 +38,31 @@ log = logging.getLogger("Risky Roller")
 
 logging.basicConfig(level=logging.INFO)
 
+
+# ==============================
+# Enums
+# ==============================
+class RoundResult(Enum):
+    """Enumeration of possible round resolution outcomes."""
+    NOT_ENOUGH = auto()
+    WAITING_FOR_REROLLS = auto()
+    TIE = auto()
+    SIXTYNINE = auto()
+    SIXTYNINE_TIE = auto()
+    OK = auto()
+
+
+@dataclass
+class ResolutionResult:
+    """Rich result object containing all computed values from round resolution."""
+    result_type: RoundResult
+    highest_user: int | None = None
+    lowest_user: int | None = None
+    tied_user_ids: list[int] = field(default_factory=list)
+    lowest_tied_user_ids: list[int] = field(default_factory=list)
+    sixtyniners: list[int] = field(default_factory=list)
+
+
 # ==============================
 # Intents
 # ==============================
@@ -67,13 +93,23 @@ def format_user_mentions(user_ids: set[int]) -> str:
     return " ".join(f"<@{user_id}>" for user_id in sorted(user_ids))
 
 
+def format_lowest_rolloff_note(tied_user_ids: set[int], selected_user_id: int | None) -> str:
+    if selected_user_id is None or len(tied_user_ids) < 2:
+        return ""
+    tied_mentions = ", ".join(f"<@{user_id}>" for user_id in sorted(tied_user_ids))
+    return f"Lowest tie auto-rolloff: {tied_mentions} -> <@{selected_user_id}>."
+
+
 def build_pending_prompt_content(state: "PendingQuestionState") -> str:
     if state.prompt_kind == "direct":
+        selected_user_id = next(iter(sorted(state.participant_user_ids)), None)
+        lowest_rolloff_note = format_lowest_rolloff_note(state.lowest_tie_user_ids, selected_user_id)
         target_mentions = format_user_mentions(state.participant_user_ids)
-        return (
-            f"<@{state.winner_id}> won the round.\n"
-            f"Click **Ask Question** to send your question to {target_mentions}."
-        )
+        lines = [f"<@{state.winner_id}> won the round."]
+        if lowest_rolloff_note:
+            lines.append(lowest_rolloff_note)
+        lines.append(f"Click **Ask Question** to send your question to {target_mentions}.")
+        return "\n".join(lines)
 
     return (
         f"<@{state.winner_id}> rolled 69 and wins.\n"
@@ -404,28 +440,49 @@ class RiskyRollState:
     is_open: bool = True
     highest_user: int | None = None
     lowest_user: int | None = None
+    lowest_tie_user_ids: set[int] = field(default_factory=set)
     reroll_user_ids: set[int] = field(default_factory=set)
 
     def add_roll(self, user_id: int, value: int) -> None:
+        """
+        Add a roll for a user.
+        If a reroll set is active, automatically clears it when all rerolls are complete.
+        """
         self.rolls[user_id] = value
         if self.reroll_user_ids:
+            # Check if all required rerolls have been completed
             completed_rerolls = {
                 reroll_user for reroll_user in self.reroll_user_ids if reroll_user in self.rolls
             }
             if completed_rerolls == self.reroll_user_ids:
+                # All rerolls are in, clear the reroll restriction
                 self.reroll_user_ids.clear()
 
     def can_roll(self, user_id: int) -> bool:
+        """
+        Check if a user is allowed to roll.
+        When a reroll set is active, only users in that set can roll (and only if they haven't yet).
+        Otherwise, users can roll if they haven't rolled already.
+        """
         if self.reroll_user_ids:
+            # Reroll mode: only allow users in the reroll set who haven't rerolled
             return user_id in self.reroll_user_ids and user_id not in self.rolls
+        # Normal mode: allow any user who hasn't rolled
         return user_id not in self.rolls
 
     def prepare_reroll(self, user_ids: list[int]) -> None:
+        """
+        Prepare for a reroll by clearing specified users' rolls and resetting state.
+        This is used when there's a tie - the tied players must reroll.
+        """
         self.reroll_user_ids = set(user_ids)
+        # Remove the previous rolls from tied users
         for user_id in self.reroll_user_ids:
             self.rolls.pop(user_id, None)
+        # Reset resolution state
         self.highest_user = None
         self.lowest_user = None
+        self.lowest_tie_user_ids.clear()
 
     def reroll_mentions(self) -> str:
         return ", ".join(f"<@{user_id}>" for user_id in sorted(self.reroll_user_ids))
@@ -434,35 +491,54 @@ class RiskyRollState:
         pending_user_ids = [user_id for user_id in self.reroll_user_ids if user_id not in self.rolls]
         return ", ".join(f"<@{user_id}>" for user_id in pending_user_ids)
 
-    def resolve(self) -> str:
+    def resolve(self) -> ResolutionResult:
+        """
+        Analyze the current round state and determine the outcome.
+        Returns a ResolutionResult with all computed values.
+        Does NOT mutate state - caller is responsible for applying changes.
+        """
         if self.reroll_user_ids:
             pending_user_ids = [user_id for user_id in self.reroll_user_ids if user_id not in self.rolls]
             if pending_user_ids:
-                return "waiting_for_rerolls"
+                return ResolutionResult(result_type=RoundResult.WAITING_FOR_REROLLS)
 
         if len(self.rolls) < 2:
-            return "not_enough"
+            return ResolutionResult(result_type=RoundResult.NOT_ENOUGH)
 
         max_value = max(self.rolls.values())
         min_value = min(self.rolls.values())
 
+        # Check for 69 rolls (automatic win)
         sixtyniners = [user_id for user_id, roll in self.rolls.items() if roll == 69]
         if sixtyniners:
-            self.highest_user = sixtyniners[0]
-            self.lowest_user = None
-            self.is_open = False
-            return "sixtynine"
+            if len(sixtyniners) > 1:
+                return ResolutionResult(
+                    result_type=RoundResult.SIXTYNINE_TIE,
+                    sixtyniners=sixtyniners,
+                )
+            return ResolutionResult(
+                result_type=RoundResult.SIXTYNINE,
+                highest_user=sixtyniners[0],
+                sixtyniners=sixtyniners,
+            )
 
+        # Check for tie on highest roll
         highest_users = [user_id for user_id, roll in self.rolls.items() if roll == max_value]
         if len(highest_users) > 1:
-            return "tie"
+            return ResolutionResult(
+                result_type=RoundResult.TIE,
+                tied_user_ids=highest_users,
+            )
 
+        # Standard outcome: single highest, determine lowest
         lowest_users = [user_id for user_id, roll in self.rolls.items() if roll == min_value]
 
-        self.highest_user = highest_users[0]
-        self.lowest_user = lowest_users[0]
-        self.is_open = False
-        return "ok"
+        return ResolutionResult(
+            result_type=RoundResult.OK,
+            highest_user=highest_users[0],
+            lowest_user=lowest_users[0],
+            lowest_tied_user_ids=lowest_users if len(lowest_users) > 1 else [],
+        )
 
 
 @dataclass
@@ -471,6 +547,7 @@ class PendingQuestionState:
     guild_id: int
     winner_id: int
     participant_user_ids: set[int]
+    lowest_tie_user_ids: set[int] = field(default_factory=set)
     prompt_message_id: int | None = None
     prompt_kind: str = "room"
 
@@ -514,6 +591,12 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
             result = f"69 rolled.\n{high_mention} wins and asks the room a question."
         else:
             result = f"{high_mention} asks\n<@{state.lowest_user}> answers"
+            lowest_rolloff_note = format_lowest_rolloff_note(
+                state.lowest_tie_user_ids,
+                state.lowest_user,
+            )
+            if lowest_rolloff_note:
+                result += f"\n{lowest_rolloff_note}"
         embed.add_field(name="Result", value=result, inline=False)
 
     return embed
@@ -576,6 +659,132 @@ async def disable_pending_question_message(
         await message.edit(content=content, view=view, allowed_mentions=discord.AllowedMentions.none())
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         return
+
+
+async def post_rolloff_embed(
+    channel: discord.abc.GuildChannel | discord.Thread | None,
+    tied_user_ids: list[int],
+    rolloff_rounds: list[dict[int, int]],
+    winner_id: int,
+    channel_id: int,
+    rolloff_type: str = "tie",
+) -> None:
+    """Post a rolloff embed to the channel with consistent error handling."""
+    try:
+        if channel is not None and isinstance(channel, (discord.TextChannel, discord.Thread)):
+            await channel.send(
+                embed=build_rolloff_embed(tied_user_ids, rolloff_rounds, winner_id)
+            )
+    except discord.Forbidden:
+        log.warning(
+            "Missing access posting %s rolloff embed in channel %s.",
+            rolloff_type,
+            channel_id,
+        )
+    except (AttributeError, discord.HTTPException):
+        log.exception("Failed to post %s rolloff embed in channel %s.", rolloff_type, channel_id)
+
+
+def handle_sixtynine_tie_resolution(
+    state: "RiskyRollState",
+    resolution: ResolutionResult,
+) -> tuple[int, list[dict[int, int]]]:
+    """
+    Handle resolution when multiple players rolled 69.
+    Returns (winner_id, rolloff_rounds).
+    """
+    rolloff_winner_id, rolloff_rounds = run_tie_rolloff(resolution.sixtyniners)
+    state.highest_user = rolloff_winner_id
+    state.lowest_user = None
+    state.is_open = False
+    log.info(
+        "Channel %s: 69 tie resolved via rolloff. Winner: %s",
+        state.channel_id,
+        rolloff_winner_id,
+    )
+    return rolloff_winner_id, rolloff_rounds
+
+
+def handle_highest_tie_resolution(
+    state: "RiskyRollState",
+    resolution: ResolutionResult,
+) -> tuple[int, int, list[dict[int, int]]]:
+    """
+    Handle resolution when multiple players tied for highest roll.
+    Returns (winner_id, lowest_user_id, rolloff_rounds).
+    """
+    # Run rolloff for highest tie
+    rolloff_winner_id, rolloff_rounds = run_tie_rolloff(resolution.tied_user_ids)
+
+    # Determine lowest among remaining players
+    remaining_user_ids = [user_id for user_id in state.rolls if user_id != rolloff_winner_id]
+    if remaining_user_ids:
+        min_roll = min(state.rolls[user_id] for user_id in remaining_user_ids)
+        lowest_tied_user_ids = [
+            user_id for user_id in remaining_user_ids if state.rolls[user_id] == min_roll
+        ]
+        if len(lowest_tied_user_ids) > 1:
+            # Run rolloff for lowest tie
+            lowest_user_id, _ = run_tie_rolloff(lowest_tied_user_ids)
+            state.lowest_tie_user_ids = set(lowest_tied_user_ids)
+        else:
+            lowest_user_id = lowest_tied_user_ids[0]
+    else:
+        lowest_user_id = rolloff_winner_id
+
+    state.highest_user = rolloff_winner_id
+    state.lowest_user = lowest_user_id
+    state.is_open = False
+    state.reroll_user_ids.clear()
+
+    log.info(
+        "Channel %s: Highest tie resolved via rolloff. Winner: %s, Lowest: %s",
+        state.channel_id,
+        rolloff_winner_id,
+        lowest_user_id,
+    )
+    return rolloff_winner_id, lowest_user_id, rolloff_rounds
+
+
+def handle_standard_resolution(
+    state: "RiskyRollState",
+    resolution: ResolutionResult,
+) -> None:
+    """Handle standard round resolution (single highest, possibly tied lowest)."""
+    # Handle lowest tie if present
+    if len(resolution.lowest_tied_user_ids) > 1:
+        lowest_user_id, _ = run_tie_rolloff(resolution.lowest_tied_user_ids)
+        state.lowest_user = lowest_user_id
+        state.lowest_tie_user_ids = set(resolution.lowest_tied_user_ids)
+        log.info(
+            "Channel %s: Lowest tie resolved via rolloff. Selected: %s",
+            state.channel_id,
+            lowest_user_id,
+        )
+    else:
+        state.lowest_user = resolution.lowest_user
+        state.lowest_tie_user_ids.clear()
+
+    state.highest_user = resolution.highest_user
+    state.is_open = False
+
+    log.info(
+        "Channel %s: Round resolved. Winner: %s, Lowest: %s",
+        state.channel_id,
+        resolution.highest_user,
+        state.lowest_user,
+    )
+
+
+def handle_sixtynine_resolution(
+    state: "RiskyRollState",
+    resolution: ResolutionResult,
+) -> None:
+    """Handle resolution when a single player rolled 69."""
+    state.highest_user = resolution.highest_user
+    state.lowest_user = None
+    state.is_open = False
+    log.info("Channel %s: 69 rolled by user %s", state.channel_id, resolution.highest_user)
 
 
 # ==============================
@@ -665,6 +874,13 @@ class RiskyRollView(discord.ui.View):
             state.add_roll(interaction.user.id, roll)
             await bot.store.save_round(state)
 
+            log.info(
+                "Channel %s: User %s rolled %s",
+                self.channel_id,
+                interaction.user.id,
+                roll,
+            )
+
             await interaction.response.edit_message(embed=build_embed(state), view=self)
 
     @discord.ui.button(
@@ -686,11 +902,11 @@ class RiskyRollView(discord.ui.View):
                 )
                 return
 
-            previous_highest_user = state.highest_user
-            previous_lowest_user = state.lowest_user
-            previous_is_open = state.is_open
-            result = state.resolve()
-            if result == "waiting_for_rerolls":
+            # Resolve the round
+            resolution = state.resolve()
+
+            # Handle early exit cases
+            if resolution.result_type == RoundResult.WAITING_FOR_REROLLS:
                 await interaction.response.send_message(
                     f"Still waiting for {state.pending_reroll_mentions()} to reroll.",
                     allowed_mentions=discord.AllowedMentions(users=True),
@@ -698,68 +914,58 @@ class RiskyRollView(discord.ui.View):
                 )
                 return
 
-            if result == "not_enough":
+            if resolution.result_type == RoundResult.NOT_ENOUGH:
                 await interaction.response.send_message("At least 2 players must roll.", ephemeral=True)
                 return
 
-            if result == "tie":
-                max_value = max(state.rolls.values())
-                tied_user_ids = [user_id for user_id, roll in state.rolls.items() if roll == max_value]
-                rolloff_winner_id, rolloff_rounds = run_tie_rolloff(tied_user_ids)
+            # Apply resolution to state and handle rolloffs
+            rolloff_rounds = None
+            if resolution.result_type == RoundResult.SIXTYNINE_TIE:
+                rolloff_winner_id, rolloff_rounds = handle_sixtynine_tie_resolution(state, resolution)
+                await post_rolloff_embed(
+                    interaction.channel,
+                    resolution.sixtyniners,
+                    rolloff_rounds,
+                    rolloff_winner_id,
+                    self.channel_id,
+                    "69 tie",
+                )
+            elif resolution.result_type == RoundResult.TIE:
+                rolloff_winner_id, _, rolloff_rounds = handle_highest_tie_resolution(state, resolution)
+                await post_rolloff_embed(
+                    interaction.channel,
+                    resolution.tied_user_ids,
+                    rolloff_rounds,
+                    rolloff_winner_id,
+                    self.channel_id,
+                    "tie",
+                )
+            elif resolution.result_type == RoundResult.OK:
+                handle_standard_resolution(state, resolution)
+            elif resolution.result_type == RoundResult.SIXTYNINE:
+                handle_sixtynine_resolution(state, resolution)
 
-                remaining_user_ids = [user_id for user_id in state.rolls if user_id != rolloff_winner_id]
-                if remaining_user_ids:
-                    lowest_user_id = min(
-                        remaining_user_ids,
-                        key=lambda user_id: (state.rolls[user_id], user_id),
-                    )
-                else:
-                    lowest_user_id = rolloff_winner_id
-
-                state.highest_user = rolloff_winner_id
-                state.lowest_user = lowest_user_id
-                state.is_open = False
-                state.reroll_user_ids.clear()
-
-                try:
-                    await interaction.channel.send(
-                        embed=build_rolloff_embed(tied_user_ids, rolloff_rounds, rolloff_winner_id)
-                    )
-                except (AttributeError, discord.HTTPException):
-                    log.exception("Failed to post tie rolloff embed in channel %s.", self.channel_id)
-
+            # Update message with closed state
             closed_view = RiskyRollView(self.channel_id)
             closed_view.disable_all_items()
-
             await bot.store.save_round(state)
 
             try:
                 await interaction.response.edit_message(embed=build_embed(state), view=closed_view)
             except discord.HTTPException:
-                state.highest_user = previous_highest_user
-                state.lowest_user = previous_lowest_user
-                state.is_open = previous_is_open
-                await bot.store.save_round(state)
                 log.exception("Failed to close round in channel %s.", self.channel_id)
-                try:
-                    if interaction.response.is_done():
-                        await interaction.followup.send(
-                            "Failed to close the round. Please try again.",
-                            ephemeral=True,
-                        )
-                    else:
-                        await interaction.response.send_message(
-                            "Failed to close the round. Please try again.",
-                            ephemeral=True,
-                        )
-                except discord.HTTPException:
-                    pass
+                await interaction.response.send_message(
+                    "Failed to close the round. Please try again.",
+                    ephemeral=True,
+                )
                 return
 
+            # Clean up active game
             active_games.pop(self.channel_id, None)
             await bot.store.delete_round(self.channel_id)
 
-            if result == "sixtynine":
+            # Handle post-round question prompts
+            if resolution.result_type in (RoundResult.SIXTYNINE, RoundResult.SIXTYNINE_TIE):
                 prompt_state = PendingQuestionState(
                     channel_id=self.channel_id,
                     guild_id=state.guild_id,
@@ -791,11 +997,20 @@ class RiskyRollView(discord.ui.View):
                     raise
                 return
 
+            # Safety check: ensure we have a lowest_user for the standard question flow
+            if state.lowest_user is None:
+                log.warning(
+                    "Round closed in channel %s without a lowest_user. This should not happen.",
+                    self.channel_id,
+                )
+                return
+
             prompt_state = PendingQuestionState(
                 channel_id=self.channel_id,
                 guild_id=state.guild_id,
                 winner_id=state.highest_user,
-                participant_user_ids={state.lowest_user} if state.lowest_user is not None else set(),
+                participant_user_ids={state.lowest_user},
+                lowest_tie_user_ids=set(state.lowest_tie_user_ids),
                 prompt_kind="direct",
             )
             question_view = SixtyNineQuestionView(self.channel_id)
