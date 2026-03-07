@@ -122,6 +122,91 @@ class RiskyRollStateTests(unittest.TestCase):
 
         self.assertEqual("<@10>, <@20>, <@30>", mentions)
 
+    def test_pending_reroll_mentions_shows_only_pending_users(self) -> None:
+        state = self.make_state(rolls={1: 50}, reroll_user_ids={1, 2, 3})
+
+        mentions = state.pending_reroll_mentions()
+
+        self.assertEqual("<@2>, <@3>", mentions)
+
+    def test_resolve_multiple_sixtynine_triggers_rolloff(self) -> None:
+        state = self.make_state(rolls={1: 69, 2: 69, 3: 20})
+
+        result = state.resolve()
+
+        self.assertEqual(RoundResult.SIXTYNINE_TIE, result.result_type)
+        self.assertEqual([1, 2], sorted(result.rolloff_user_ids))
+        self.assertIsNotNone(result.rolloff_rounds)
+        self.assertFalse(state.is_open)
+        self.assertIsNotNone(state.highest_user)
+        self.assertIn(state.highest_user, [1, 2])  # Winner is one of the 69 rollers
+        self.assertIsNone(state.lowest_user)
+
+    def test_resolve_lowest_tie_runs_rolloff(self) -> None:
+        state = self.make_state(rolls={1: 100, 2: 10, 3: 10})
+
+        result = state.resolve()
+
+        self.assertEqual(RoundResult.OK, result.result_type)
+        self.assertEqual(1, state.highest_user)
+        self.assertIn(state.lowest_user, [2, 3])  # One of the tied lowest
+        self.assertEqual({2, 3}, state.lowest_tie_user_ids)
+        self.assertFalse(state.is_open)
+
+    def test_resolve_with_zero_rolls(self) -> None:
+        state = self.make_state(rolls={})
+
+        result = state.resolve()
+
+        self.assertEqual(RoundResult.NOT_ENOUGH, result.result_type)
+        self.assertTrue(state.is_open)
+
+    def test_resolve_highest_tie_with_two_players_loser_is_lowest(self) -> None:
+        state = self.make_state(rolls={1: 50, 2: 50})
+
+        result = state.resolve()
+
+        self.assertEqual(RoundResult.TIE, result.result_type)
+        self.assertIsNotNone(result.rolloff_rounds)
+        self.assertFalse(state.is_open)
+        # Winner and lowest should be different (loser of rolloff becomes lowest)
+        self.assertNotEqual(state.highest_user, state.lowest_user)
+        self.assertIn(state.highest_user, [1, 2])
+        self.assertIn(state.lowest_user, [1, 2])
+
+    def test_resolve_highest_tie_with_lowest_also_tied(self) -> None:
+        state = self.make_state(rolls={1: 90, 2: 90, 3: 10, 4: 10})
+
+        result = state.resolve()
+
+        self.assertEqual(RoundResult.TIE, result.result_type)
+        self.assertEqual([1, 2], sorted(result.rolloff_user_ids))
+        self.assertIsNotNone(result.rolloff_rounds)
+        self.assertFalse(state.is_open)
+        # Highest winner should be one of 1 or 2
+        self.assertIn(state.highest_user, [1, 2])
+        # Lowest should be one of 3 or 4 (with rolloff)
+        self.assertIn(state.lowest_user, [3, 4])
+        self.assertEqual({3, 4}, state.lowest_tie_user_ids)
+
+    def test_resolve_clears_reroll_user_ids_on_tie_resolution(self) -> None:
+        state = self.make_state(rolls={1: 80, 2: 80, 3: 20})
+        state.reroll_user_ids = {1, 2}
+
+        result = state.resolve()
+
+        self.assertEqual(RoundResult.TIE, result.result_type)
+        self.assertEqual(set(), state.reroll_user_ids)
+
+    def test_resolve_clears_lowest_tie_user_ids_at_start(self) -> None:
+        state = self.make_state(rolls={1: 100, 2: 50})
+        state.lowest_tie_user_ids = {99, 98}  # Stale data
+
+        result = state.resolve()
+
+        self.assertEqual(RoundResult.OK, result.result_type)
+        self.assertEqual(set(), state.lowest_tie_user_ids)  # Should be cleared
+
 
 class GameStatePresentationTests(unittest.TestCase):
     def test_build_embed_for_open_round_no_rolls(self) -> None:
