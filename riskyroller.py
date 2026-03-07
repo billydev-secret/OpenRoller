@@ -89,6 +89,40 @@ def build_pending_question_summary(state: "PendingQuestionState", question_text:
     return f"<@{state.winner_id}> rolled 69 and asked:\n{question_text}"
 
 
+def run_tie_rolloff(tied_user_ids: list[int]) -> tuple[int, list[dict[int, int]]]:
+    contenders = sorted(set(tied_user_ids))
+    rounds: list[dict[int, int]] = []
+
+    while True:
+        round_rolls = {user_id: random.randint(1, 100) for user_id in contenders}
+        rounds.append(round_rolls)
+        max_value = max(round_rolls.values())
+        winners = sorted(user_id for user_id, roll in round_rolls.items() if roll == max_value)
+        if len(winners) == 1:
+            return winners[0], rounds
+        contenders = winners
+
+
+def build_rolloff_embed(
+    tied_user_ids: list[int],
+    rounds: list[dict[int, int]],
+    winner_id: int,
+) -> discord.Embed:
+    embed = discord.Embed(title="Tie Rolloff", color=discord.Color.orange())
+    embed.description = (
+        "Highest roll tied, so an automatic rolloff was run.\n"
+        f"Initial tied players: {', '.join(f'<@{user_id}>' for user_id in sorted(set(tied_user_ids)))}"
+    )
+
+    for index, round_rolls in enumerate(rounds, start=1):
+        sorted_rolls = sorted(round_rolls.items(), key=lambda item: item[1], reverse=True)
+        lines = [f"**{roll}** - <@{user_id}>" for user_id, roll in sorted_rolls]
+        embed.add_field(name=f"Rolloff Round {index}", value="\n".join(lines), inline=False)
+
+    embed.add_field(name="Rolloff Winner", value=f"<@{winner_id}>", inline=False)
+    return embed
+
+
 class StateStore:
     def __init__(self, path: str):
         self.path = path
@@ -671,10 +705,28 @@ class RiskyRollView(discord.ui.View):
             if result == "tie":
                 max_value = max(state.rolls.values())
                 tied_user_ids = [user_id for user_id, roll in state.rolls.items() if roll == max_value]
-                state.prepare_reroll(tied_user_ids)
-                await bot.store.save_round(state)
-                await interaction.response.edit_message(embed=build_embed(state), view=self)
-                return
+                rolloff_winner_id, rolloff_rounds = run_tie_rolloff(tied_user_ids)
+
+                remaining_user_ids = [user_id for user_id in state.rolls if user_id != rolloff_winner_id]
+                if remaining_user_ids:
+                    lowest_user_id = min(
+                        remaining_user_ids,
+                        key=lambda user_id: (state.rolls[user_id], user_id),
+                    )
+                else:
+                    lowest_user_id = rolloff_winner_id
+
+                state.highest_user = rolloff_winner_id
+                state.lowest_user = lowest_user_id
+                state.is_open = False
+                state.reroll_user_ids.clear()
+
+                try:
+                    await interaction.channel.send(
+                        embed=build_rolloff_embed(tied_user_ids, rolloff_rounds, rolloff_winner_id)
+                    )
+                except (AttributeError, discord.HTTPException):
+                    log.exception("Failed to post tie rolloff embed in channel %s.", self.channel_id)
 
             closed_view = RiskyRollView(self.channel_id)
             closed_view.disable_all_items()
