@@ -1,16 +1,18 @@
 import unittest
 from unittest.mock import patch
 
-from riskyroller import (
-    PendingQuestionState,
-    ResolutionResult,
-    RiskyRollState,
-    RoundResult,
+from riskyroller.formatters import (
     build_embed,
     build_pending_prompt_content,
     build_pending_question_summary,
     build_rolloff_embed,
-    run_tie_rolloff,
+)
+from riskyroller.logic import run_tie_rolloff
+from riskyroller.models import (
+    PendingQuestionState,
+    ResolutionResult,
+    RiskyRollState,
+    RoundResult,
 )
 
 
@@ -360,7 +362,7 @@ class GameStatePresentationTests(unittest.TestCase):
 
     def test_run_tie_rolloff_retries_until_single_winner(self) -> None:
         with patch(
-            "riskyroller.random.randint",
+            "riskyroller.logic.random.randint",
             side_effect=[50, 50, 60, 60, 99, 10],
         ):
             winner_id, rounds = run_tie_rolloff([2, 1])
