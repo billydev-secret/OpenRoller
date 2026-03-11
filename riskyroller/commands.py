@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import discord
@@ -6,7 +7,7 @@ from discord import app_commands
 from . import state as app_state
 from .formatters import build_embed
 from .models import RiskyRollState
-from .views import RiskyRollView, SixtyNineQuestionView, disable_pending_question_message, disable_round_message
+from .views import RiskyRollView, SixtyNineQuestionView, auto_close_round, disable_pending_question_message, disable_round_message
 
 log = logging.getLogger(__name__)
 
@@ -17,7 +18,15 @@ def setup(bot: discord.Client) -> None:
         description="Open a new Risky Rolls round in this channel",
     )
     @app_commands.guild_only()
-    async def risky_start(interaction: discord.Interaction):
+    @app_commands.describe(
+        auto_close_players="Auto-close when this many players have rolled",
+        auto_close_minutes="Auto-close after this many minutes",
+    )
+    async def risky_start(
+        interaction: discord.Interaction,
+        auto_close_players: int | None = None,
+        auto_close_minutes: int | None = None,
+    ):
         if interaction.guild is None or interaction.channel is None:
             await interaction.response.send_message(
                 "This command can only be used in a server channel.",
@@ -37,6 +46,7 @@ def setup(bot: discord.Client) -> None:
                 channel_id=interaction.channel.id,
                 guild_id=interaction.guild.id,
                 opener_id=interaction.user.id,
+                auto_close_players=auto_close_players if auto_close_players and auto_close_players >= 2 else None,
             )
             app_state.active_games[interaction.channel.id] = state
             await app_state.store.save_round(state)
@@ -60,6 +70,14 @@ def setup(bot: discord.Client) -> None:
                 message = await interaction.original_response()
                 state.message_id = message.id
                 await app_state.store.save_round(state)
+
+                if auto_close_minutes and auto_close_minutes > 0:
+                    async def _timed_close() -> None:
+                        await asyncio.sleep(auto_close_minutes * 60)
+                        await auto_close_round(interaction.client, interaction.channel.id)
+
+                    task = asyncio.get_event_loop().create_task(_timed_close())
+                    app_state.auto_close_tasks[interaction.channel.id] = task
             except Exception:
                 app_state.active_games.pop(interaction.channel.id, None)
                 await app_state.store.delete_round(interaction.channel.id)
@@ -123,6 +141,10 @@ def setup(bot: discord.Client) -> None:
             return
 
         async with app_state.get_channel_lock(interaction.channel.id):
+            task = app_state.auto_close_tasks.pop(interaction.channel.id, None)
+            if task:
+                task.cancel()
+
             state = app_state.active_games.pop(interaction.channel.id, None)
             pending_state = app_state.pending_questions.pop(interaction.channel.id, None)
 

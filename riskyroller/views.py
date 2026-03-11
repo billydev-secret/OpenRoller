@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import random
 
@@ -15,6 +16,97 @@ from .formatters import (
 from .models import PendingQuestionState, RiskyRollState, RoundResult
 
 log = logging.getLogger(__name__)
+
+
+async def auto_close_round(client: discord.Client, channel_id: int) -> None:
+    async with app_state.get_channel_lock(channel_id):
+        app_state.auto_close_tasks.pop(channel_id, None)
+
+        state = app_state.active_games.get(channel_id)
+        if not state or not state.is_open:
+            return
+
+        resolution = state.resolve()
+        channel = await get_text_channel(client, channel_id)
+
+        if resolution.result_type in (RoundResult.NOT_ENOUGH, RoundResult.WAITING_FOR_REROLLS):
+            state.is_open = False
+            app_state.active_games.pop(channel_id, None)
+            await app_state.store.delete_round(channel_id)
+            if channel is not None:
+                await disable_round_message(state, channel)
+                await channel.send("Round auto-closed: not enough players rolled.")
+            return
+
+        if resolution.rolloff_rounds:
+            await post_rolloff_embed(
+                channel,
+                resolution.rolloff_user_ids,
+                resolution.rolloff_rounds,
+                state.highest_user,
+                channel_id,
+            )
+
+        closed_view = RiskyRollView(channel_id)
+        closed_view.disable_all_items()
+
+        if state.message_id is not None and channel is not None:
+            try:
+                message = await channel.fetch_message(state.message_id)
+                await message.edit(embed=build_embed(state), view=closed_view)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                log.exception("Auto-close: failed to edit round message in channel %s.", channel_id)
+
+        await app_state.store.save_round(state)
+        app_state.active_games.pop(channel_id, None)
+        await app_state.store.delete_round(channel_id)
+
+        if channel is None:
+            return
+
+        if resolution.result_type in (RoundResult.SIXTYNINE, RoundResult.SIXTYNINE_TIE):
+            prompt_state = PendingQuestionState(
+                channel_id=channel_id,
+                guild_id=state.guild_id,
+                winner_id=state.highest_user,
+                participant_user_ids=set(state.rolls),
+                prompt_kind="room",
+            )
+        else:
+            if state.lowest_user is None:
+                log.warning("Auto-close: no lowest_user in channel %s.", channel_id)
+                return
+            prompt_state = PendingQuestionState(
+                channel_id=channel_id,
+                guild_id=state.guild_id,
+                winner_id=state.highest_user,
+                participant_user_ids={state.lowest_user},
+                lowest_tie_user_ids=set(state.lowest_tie_user_ids),
+                prompt_kind="direct",
+            )
+
+        question_view = SixtyNineQuestionView(channel_id)
+        prompt_message: discord.Message | None = None
+
+        try:
+            prompt_message = await channel.send(
+                content=build_pending_prompt_content(prompt_state),
+                allowed_mentions=discord.AllowedMentions(users=True),
+                view=question_view,
+            )
+            prompt_state.prompt_message_id = prompt_message.id
+            app_state.pending_questions[channel_id] = prompt_state
+            await app_state.store.save_pending_question(prompt_state)
+        except Exception:
+            app_state.pending_questions.pop(channel_id, None)
+            await app_state.store.delete_pending_question(channel_id)
+            if prompt_message is not None:
+                await disable_pending_question_message(
+                    client,
+                    prompt_state,
+                    "Risky Rolls could not prepare the question prompt. Start a new round.",
+                )
+            raise
 
 
 class RiskyRollView(discord.ui.View):
@@ -59,6 +151,14 @@ class RiskyRollView(discord.ui.View):
 
             await interaction.response.edit_message(embed=build_embed(state), view=self)
 
+            if state.auto_close_players and len(state.rolls) >= state.auto_close_players:
+                task = app_state.auto_close_tasks.pop(self.channel_id, None)
+                if task:
+                    task.cancel()
+                asyncio.get_event_loop().create_task(
+                    auto_close_round(interaction.client, self.channel_id)
+                )
+
     @discord.ui.button(
         label="Close Round",
         style=discord.ButtonStyle.danger,
@@ -77,6 +177,10 @@ class RiskyRollView(discord.ui.View):
                     ephemeral=True,
                 )
                 return
+
+            task = app_state.auto_close_tasks.pop(self.channel_id, None)
+            if task:
+                task.cancel()
 
             resolution = state.resolve()
 

@@ -37,6 +37,7 @@ class RiskyRollState:
     lowest_user: int | None = None
     lowest_tie_user_ids: set[int] = field(default_factory=set)
     reroll_user_ids: set[int] = field(default_factory=set)
+    auto_close_players: int | None = None
 
     def add_roll(self, user_id: int, value: int) -> None:
         """

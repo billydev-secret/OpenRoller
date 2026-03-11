@@ -10,6 +10,7 @@ store: StateStore = StateStore(DATABASE_PATH)
 active_games: dict[int, RiskyRollState] = {}
 pending_questions: dict[int, PendingQuestionState] = {}
 ping_roles: dict[int, int] = {}
+auto_close_tasks: dict[int, asyncio.Task] = {}
 
 _channel_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = weakref.WeakValueDictionary()
 
