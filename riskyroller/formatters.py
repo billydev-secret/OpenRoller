@@ -143,6 +143,6 @@ async def post_rolloff_embed(
                 embed=build_rolloff_embed(tied_user_ids, rolloff_rounds, winner_id)
             )
     except discord.Forbidden:
-        log.warning("Missing access posting rolloff embed in channel %s.", channel_id)
+        log.warning("Missing access posting rolloff embed in #%s.", channel.name)
     except (AttributeError, discord.HTTPException):
-        log.exception("Failed to post rolloff embed in channel %s.", channel_id)
+        log.exception("Failed to post rolloff embed in #%s.", getattr(channel, "name", channel_id))

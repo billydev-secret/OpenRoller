@@ -55,7 +55,7 @@ async def auto_close_round(client: discord.Client, channel_id: int) -> None:
                 message = await channel.fetch_message(state.message_id)
                 await message.edit(embed=build_embed(state), view=closed_view)
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                log.exception("Auto-close: failed to edit round message in channel %s.", channel_id)
+                log.exception("Auto-close: failed to edit round message in #%s.", channel.name)
 
         await app_state.store.save_round(state)
         app_state.active_games.pop(channel_id, None)
@@ -74,7 +74,7 @@ async def auto_close_round(client: discord.Client, channel_id: int) -> None:
             )
         else:
             if state.lowest_user is None:
-                log.warning("Auto-close: no lowest_user in channel %s.", channel_id)
+                log.warning("Auto-close: no lowest_user in #%s.", channel.name)
                 return
             prompt_state = PendingQuestionState(
                 channel_id=channel_id,
@@ -143,9 +143,9 @@ class RiskyRollView(discord.ui.View):
             await app_state.store.save_round(state)
 
             log.info(
-                "Channel %s: User %s rolled %s",
-                self.channel_id,
-                interaction.user.id,
+                "Channel #%s: %s rolled %s",
+                getattr(interaction.channel, "name", self.channel_id),
+                interaction.user.display_name,
                 roll,
             )
 
@@ -212,7 +212,7 @@ class RiskyRollView(discord.ui.View):
             try:
                 await interaction.response.edit_message(embed=build_embed(state), view=closed_view)
             except discord.HTTPException:
-                log.exception("Failed to close round in channel %s.", self.channel_id)
+                log.exception("Failed to close round in #%s.", getattr(interaction.channel, "name", self.channel_id))
                 await interaction.response.send_message(
                     "Failed to close the round. Please try again.",
                     ephemeral=True,
@@ -257,8 +257,8 @@ class RiskyRollView(discord.ui.View):
 
             if state.lowest_user is None:
                 log.warning(
-                    "Round closed in channel %s without a lowest_user. This should not happen.",
-                    self.channel_id,
+                    "Round closed in #%s without a lowest_user. This should not happen.",
+                    getattr(interaction.channel, "name", self.channel_id),
                 )
                 return
 
@@ -348,7 +348,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                     ephemeral=False,
                 )
             except discord.HTTPException:
-                log.exception("Failed to deliver winner question in channel %s.", self.channel_id)
+                log.exception("Failed to deliver winner question in #%s.", getattr(interaction.channel, "name", self.channel_id))
                 await interaction.followup.send(
                     "I could not send the question. Please try again.",
                     ephemeral=True,
