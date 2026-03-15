@@ -155,7 +155,7 @@ class RiskyRollView(discord.ui.View):
                 task = app_state.auto_close_tasks.pop(self.channel_id, None)
                 if task:
                     task.cancel()
-                asyncio.get_event_loop().create_task(
+                asyncio.create_task(
                     auto_close_round(interaction.client, self.channel_id)
                 )
 
@@ -205,9 +205,11 @@ class RiskyRollView(discord.ui.View):
                     self.channel_id,
                 )
 
+            app_state.active_games.pop(self.channel_id, None)
+            await app_state.store.delete_round(self.channel_id)
+
             closed_view = RiskyRollView(self.channel_id)
             closed_view.disable_all_items()
-            await app_state.store.save_round(state)
 
             try:
                 await interaction.response.edit_message(embed=build_embed(state), view=closed_view)
@@ -218,9 +220,6 @@ class RiskyRollView(discord.ui.View):
                     ephemeral=True,
                 )
                 return
-
-            app_state.active_games.pop(self.channel_id, None)
-            await app_state.store.delete_round(self.channel_id)
 
             if resolution.result_type in (RoundResult.SIXTYNINE, RoundResult.SIXTYNINE_TIE):
                 prompt_state = PendingQuestionState(

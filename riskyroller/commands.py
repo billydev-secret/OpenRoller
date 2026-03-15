@@ -76,7 +76,7 @@ def setup(bot: discord.Client) -> None:
                         await asyncio.sleep(auto_close_minutes * 60)
                         await auto_close_round(interaction.client, interaction.channel.id)
 
-                    task = asyncio.get_event_loop().create_task(_timed_close())
+                    task = asyncio.create_task(_timed_close())
                     app_state.auto_close_tasks[interaction.channel.id] = task
             except Exception:
                 app_state.active_games.pop(interaction.channel.id, None)
