@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sqlite3
+import time
 
 from .logic import deserialize_user_ids, serialize_user_ids
 from .models import PendingQuestionState, RiskyRollState
@@ -36,7 +37,10 @@ class StateStore:
                     is_open INTEGER NOT NULL DEFAULT 1,
                     highest_user INTEGER,
                     lowest_user INTEGER,
-                    reroll_user_ids TEXT
+                    reroll_user_ids TEXT,
+                    auto_close_players INTEGER,
+                    auto_close_minutes INTEGER,
+                    created_at REAL
                 );
 
                 CREATE TABLE IF NOT EXISTS round_rolls (
@@ -64,6 +68,11 @@ class StateStore:
             }
             if "reroll_user_ids" not in active_round_columns:
                 conn.execute("ALTER TABLE active_rounds ADD COLUMN reroll_user_ids TEXT")
+            for col in ("auto_close_players", "auto_close_minutes"):
+                if col not in active_round_columns:
+                    conn.execute(f"ALTER TABLE active_rounds ADD COLUMN {col} INTEGER")
+            if "created_at" not in active_round_columns:
+                conn.execute("ALTER TABLE active_rounds ADD COLUMN created_at REAL")
 
             pending_question_columns = {
                 row["name"]
@@ -113,9 +122,12 @@ class StateStore:
                     is_open,
                     highest_user,
                     lowest_user,
-                    reroll_user_ids
+                    reroll_user_ids,
+                    auto_close_players,
+                    auto_close_minutes,
+                    created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(channel_id) DO UPDATE SET
                     guild_id = excluded.guild_id,
                     opener_id = excluded.opener_id,
@@ -123,7 +135,10 @@ class StateStore:
                     is_open = excluded.is_open,
                     highest_user = excluded.highest_user,
                     lowest_user = excluded.lowest_user,
-                    reroll_user_ids = excluded.reroll_user_ids
+                    reroll_user_ids = excluded.reroll_user_ids,
+                    auto_close_players = excluded.auto_close_players,
+                    auto_close_minutes = excluded.auto_close_minutes,
+                    created_at = excluded.created_at
                 """,
                 (
                     state.channel_id,
@@ -134,6 +149,9 @@ class StateStore:
                     state.highest_user,
                     state.lowest_user,
                     serialize_user_ids(state.reroll_user_ids),
+                    state.auto_close_players,
+                    state.auto_close_minutes,
+                    state.created_at,
                 ),
             )
 
@@ -210,7 +228,10 @@ class StateStore:
                     is_open,
                     highest_user,
                     lowest_user,
-                    reroll_user_ids
+                    reroll_user_ids,
+                    auto_close_players,
+                    auto_close_minutes,
+                    created_at
                 FROM active_rounds
                 WHERE is_open = 1
                 """
@@ -226,12 +247,19 @@ class StateStore:
                     highest_user=int(row["highest_user"]) if row["highest_user"] is not None else None,
                     lowest_user=int(row["lowest_user"]) if row["lowest_user"] is not None else None,
                     reroll_user_ids=deserialize_user_ids(row["reroll_user_ids"]),
+                    auto_close_players=int(row["auto_close_players"]) if row["auto_close_players"] is not None else None,
+                    auto_close_minutes=int(row["auto_close_minutes"]) if row["auto_close_minutes"] is not None else None,
+                    created_at=float(row["created_at"]) if row["created_at"] is not None else time.time(),
                 )
                 for row in round_rows
             }
 
             roll_rows = conn.execute(
-                "SELECT channel_id, user_id, roll FROM round_rolls ORDER BY roll DESC"
+                """
+                SELECT channel_id, user_id, roll FROM round_rolls
+                WHERE channel_id IN (SELECT channel_id FROM active_rounds WHERE is_open = 1)
+                ORDER BY roll DESC
+                """
             ).fetchall()
 
         for row in roll_rows:

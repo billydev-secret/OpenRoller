@@ -73,9 +73,13 @@ def setup(bot: discord.Client) -> None:
                 await app_state.store.save_round(state)
 
                 if auto_close_minutes and auto_close_minutes > 0:
+                    _client = interaction.client
+                    _channel_id = interaction.channel.id
+                    _minutes = auto_close_minutes
+
                     async def _timed_close() -> None:
-                        await asyncio.sleep(auto_close_minutes * 60)
-                        await auto_close_round(interaction.client, interaction.channel.id)
+                        await asyncio.sleep(_minutes * 60)
+                        await auto_close_round(_client, _channel_id)
 
                     task = asyncio.create_task(_timed_close())
                     app_state.auto_close_tasks[interaction.channel.id] = task

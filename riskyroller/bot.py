@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import time
 
 import discord
 from discord import app_commands
@@ -6,7 +8,7 @@ from discord import app_commands
 from . import commands
 from . import state as app_state
 from .config import DEBUG, DEBUG_GUILD_ID, SYNC_COMMANDS_ON_STARTUP
-from .views import RiskyRollView, SixtyNineQuestionView
+from .views import RiskyRollView, SixtyNineQuestionView, auto_close_round
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +31,22 @@ class Bot(discord.Client):
             if state.message_id is not None:
                 app_state.active_games[state.channel_id] = state
                 self.add_view(RiskyRollView(state.channel_id), message_id=state.message_id)
+
+                if state.auto_close_minutes:
+                    elapsed = time.time() - state.created_at
+                    remaining = max(0.0, state.auto_close_minutes * 60 - elapsed)
+
+                    async def _timed_close(channel_id: int = state.channel_id, delay: float = remaining) -> None:
+                        await asyncio.sleep(delay)
+                        await auto_close_round(self, channel_id)
+
+                    task = asyncio.create_task(_timed_close())
+                    app_state.auto_close_tasks[state.channel_id] = task
+                    log.info(
+                        "Restored auto-close timer for channel %s (%.0fs remaining).",
+                        state.channel_id,
+                        remaining,
+                    )
             else:
                 log.warning("Active round in channel %s is missing a message_id.", state.channel_id)
                 await app_state.store.delete_round(state.channel_id)

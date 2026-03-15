@@ -105,8 +105,9 @@ def build_rolloff_embed(
     tied_user_ids: list[int],
     rounds: list[dict[int, int]],
     winner_id: int,
+    title: str = "Tie Rolloff",
 ) -> discord.Embed:
-    embed = discord.Embed(title="Tie Rolloff", color=discord.Color.orange())
+    embed = discord.Embed(title=title, color=discord.Color.orange())
     embed.description = (
         "Highest roll tied, so an automatic rolloff was run.\n"
         f"Initial tied players: {', '.join(f'<@{user_id}>' for user_id in sorted(set(tied_user_ids)))}"
@@ -144,11 +145,12 @@ async def post_rolloff_embed(
     rolloff_rounds: list[dict[int, int]],
     winner_id: int,
     channel_id: int,
+    title: str = "Tie Rolloff",
 ) -> None:
     try:
         if channel is not None and isinstance(channel, (discord.TextChannel, discord.Thread)):
             await channel.send(
-                embed=build_rolloff_embed(tied_user_ids, rolloff_rounds, winner_id)
+                embed=build_rolloff_embed(tied_user_ids, rolloff_rounds, winner_id, title)
             )
     except discord.Forbidden:
         log.warning("Missing access posting rolloff embed in #%s.", channel.name)

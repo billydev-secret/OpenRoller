@@ -1,4 +1,5 @@
 import logging
+import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
@@ -23,6 +24,8 @@ class ResolutionResult:
     result_type: RoundResult
     rolloff_user_ids: list[int] = field(default_factory=list)
     rolloff_rounds: list[dict[int, int]] | None = None
+    lowest_rolloff_user_ids: list[int] = field(default_factory=list)
+    lowest_rolloff_rounds: list[dict[int, int]] | None = None
 
 
 @dataclass
@@ -39,6 +42,7 @@ class RiskyRollState:
     reroll_user_ids: set[int] = field(default_factory=set)
     auto_close_players: int | None = None
     auto_close_minutes: int | None = None
+    created_at: float = field(default_factory=time.time)
 
     def add_roll(self, user_id: int, value: int) -> None:
         """
@@ -126,12 +130,15 @@ class RiskyRollState:
             winner_id, rolloff_rounds = run_tie_rolloff(highest_users)
 
             remaining_user_ids = [user_id for user_id in self.rolls if user_id != winner_id]
+            lowest_rolloff_user_ids: list[int] = []
+            lowest_rolloff_rounds: list[dict[int, int]] | None = None
             if remaining_user_ids:
                 min_roll = min(self.rolls[user_id] for user_id in remaining_user_ids)
                 lowest_tied = [u for u in remaining_user_ids if self.rolls[u] == min_roll]
                 if len(lowest_tied) > 1:
-                    lowest_id, _ = run_tie_rolloff(lowest_tied)
+                    lowest_id, lowest_rolloff_rounds = run_tie_rolloff(lowest_tied)
                     self.lowest_tie_user_ids = set(lowest_tied)
+                    lowest_rolloff_user_ids = lowest_tied
                 else:
                     lowest_id = lowest_tied[0]
             else:
@@ -146,12 +153,15 @@ class RiskyRollState:
                 result_type=RoundResult.TIE,
                 rolloff_user_ids=highest_users,
                 rolloff_rounds=rolloff_rounds,
+                lowest_rolloff_user_ids=lowest_rolloff_user_ids,
+                lowest_rolloff_rounds=lowest_rolloff_rounds,
             )
 
         # Standard outcome: single highest, possibly tied lowest
         lowest_users = [user_id for user_id, roll in self.rolls.items() if roll == min_value]
+        lowest_rolloff_rounds: list[dict[int, int]] | None = None
         if len(lowest_users) > 1:
-            lowest_id, _ = run_tie_rolloff(lowest_users)
+            lowest_id, lowest_rolloff_rounds = run_tie_rolloff(lowest_users)
             self.lowest_tie_user_ids = set(lowest_users)
             log.info("Channel %s: Lowest tie resolved via rolloff. Selected: %s", self.channel_id, lowest_id)
         else:
@@ -161,7 +171,11 @@ class RiskyRollState:
         self.lowest_user = lowest_id
         self.is_open = False
         log.info("Channel %s: Round resolved. Winner: %s, Lowest: %s", self.channel_id, highest_users[0], lowest_id)
-        return ResolutionResult(result_type=RoundResult.OK)
+        return ResolutionResult(
+            result_type=RoundResult.OK,
+            lowest_rolloff_user_ids=lowest_users if lowest_rolloff_rounds else [],
+            lowest_rolloff_rounds=lowest_rolloff_rounds,
+        )
 
 
 @dataclass

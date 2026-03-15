@@ -47,6 +47,16 @@ async def auto_close_round(client: discord.Client, channel_id: int) -> None:
                 channel_id,
             )
 
+        if resolution.lowest_rolloff_rounds:
+            await post_rolloff_embed(
+                channel,
+                resolution.lowest_rolloff_user_ids,
+                resolution.lowest_rolloff_rounds,
+                state.lowest_user,
+                channel_id,
+                title="Lowest Roll Tiebreaker",
+            )
+
         closed_view = RiskyRollView(channel_id)
         closed_view.disable_all_items()
 
@@ -57,7 +67,6 @@ async def auto_close_round(client: discord.Client, channel_id: int) -> None:
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 log.exception("Auto-close: failed to edit round message in #%s.", channel.name)
 
-        await app_state.store.save_round(state)
         app_state.active_games.pop(channel_id, None)
         await app_state.store.delete_round(channel_id)
 
@@ -119,6 +128,14 @@ class RiskyRollView(discord.ui.View):
             if hasattr(item, "disabled"):
                 item.disabled = True
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        log.exception("Unhandled error in RiskyRollView (channel %s)", self.channel_id, exc_info=error)
+        msg = "Something went wrong. Please try again."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+
     @discord.ui.button(
         label="Roll",
         style=discord.ButtonStyle.primary,
@@ -155,9 +172,10 @@ class RiskyRollView(discord.ui.View):
                 task = app_state.auto_close_tasks.pop(self.channel_id, None)
                 if task:
                     task.cancel()
-                asyncio.create_task(
+                close_task = asyncio.create_task(
                     auto_close_round(interaction.client, self.channel_id)
                 )
+                app_state.auto_close_tasks[self.channel_id] = close_task
 
     @discord.ui.button(
         label="Close Round",
@@ -178,10 +196,6 @@ class RiskyRollView(discord.ui.View):
                 )
                 return
 
-            task = app_state.auto_close_tasks.pop(self.channel_id, None)
-            if task:
-                task.cancel()
-
             resolution = state.resolve()
 
             if resolution.result_type == RoundResult.WAITING_FOR_REROLLS:
@@ -196,6 +210,10 @@ class RiskyRollView(discord.ui.View):
                 await interaction.response.send_message("At least 2 players must roll.", ephemeral=True)
                 return
 
+            task = app_state.auto_close_tasks.pop(self.channel_id, None)
+            if task:
+                task.cancel()
+
             if resolution.rolloff_rounds:
                 await post_rolloff_embed(
                     interaction.channel,
@@ -203,6 +221,16 @@ class RiskyRollView(discord.ui.View):
                     resolution.rolloff_rounds,
                     state.highest_user,
                     self.channel_id,
+                )
+
+            if resolution.lowest_rolloff_rounds:
+                await post_rolloff_embed(
+                    interaction.channel,
+                    resolution.lowest_rolloff_user_ids,
+                    resolution.lowest_rolloff_rounds,
+                    state.lowest_user,
+                    self.channel_id,
+                    title="Lowest Roll Tiebreaker",
                 )
 
             app_state.active_games.pop(self.channel_id, None)
@@ -216,7 +244,7 @@ class RiskyRollView(discord.ui.View):
             except discord.HTTPException:
                 log.exception("Failed to close round in #%s.", getattr(interaction.channel, "name", self.channel_id))
                 await interaction.response.send_message(
-                    "Failed to close the round. Please try again.",
+                    "Round closed, but the message could not be updated. Start a new round.",
                     ephemeral=True,
                 )
                 return
@@ -378,6 +406,14 @@ class SixtyNineQuestionView(discord.ui.View):
         for item in self.children:
             if hasattr(item, "disabled"):
                 item.disabled = True
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        log.exception("Unhandled error in SixtyNineQuestionView (channel %s)", self.channel_id, exc_info=error)
+        msg = "Something went wrong. Please try again."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
 
     @discord.ui.button(
         label="Ask Question",
