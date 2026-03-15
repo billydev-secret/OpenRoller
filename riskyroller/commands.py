@@ -47,6 +47,7 @@ def setup(bot: discord.Client) -> None:
                 guild_id=interaction.guild.id,
                 opener_id=interaction.user.id,
                 auto_close_players=auto_close_players if auto_close_players and auto_close_players >= 2 else None,
+                auto_close_minutes=auto_close_minutes if auto_close_minutes and auto_close_minutes > 0 else None,
             )
             app_state.active_games[interaction.channel.id] = state
             await app_state.store.save_round(state)

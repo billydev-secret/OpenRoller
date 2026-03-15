@@ -53,6 +53,14 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
     else:
         embed.description = "Round closed."
 
+    if state.is_open and (state.auto_close_players or state.auto_close_minutes):
+        parts = []
+        if state.auto_close_players:
+            parts.append(f"at {state.auto_close_players} players")
+        if state.auto_close_minutes:
+            parts.append(f"after {state.auto_close_minutes} minute{'s' if state.auto_close_minutes != 1 else ''}")
+        embed.set_footer(text=f"Auto-closes {' or '.join(parts)}")
+
     if not state.rolls:
         embed.add_field(name="Rolls (0)", value="No rolls yet.", inline=False)
         if state.reroll_user_ids:
