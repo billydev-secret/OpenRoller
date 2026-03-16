@@ -29,38 +29,48 @@ class Bot(discord.Client):
 
         for state in await app_state.store.load_active_rounds():
             if state.message_id is not None:
-                app_state.active_games[state.channel_id] = state
-                self.add_view(RiskyRollView(state.channel_id), message_id=state.message_id)
+                app_state.active_games[state.game_id] = state
+                self.add_view(RiskyRollView(state.game_id), message_id=state.message_id)
 
-                if state.auto_close_minutes:
+                if state.auto_close_players and len(state.rolls) >= state.auto_close_players:
+                    # Player threshold was already met before restart; close immediately.
+                    task = asyncio.create_task(auto_close_round(self, state.game_id))
+                    app_state.auto_close_tasks[state.game_id] = task
+                    log.info(
+                        "Restored auto-close for game %s: player threshold already met (%d/%d).",
+                        state.game_id,
+                        len(state.rolls),
+                        state.auto_close_players,
+                    )
+                elif state.auto_close_minutes:
                     elapsed = time.time() - state.created_at
                     remaining = max(0.0, state.auto_close_minutes * 60 - elapsed)
 
-                    async def _timed_close(channel_id: int = state.channel_id, delay: float = remaining) -> None:
+                    async def _timed_close(game_id: str = state.game_id, delay: float = remaining) -> None:
                         await asyncio.sleep(delay)
-                        await auto_close_round(self, channel_id)
+                        await auto_close_round(self, game_id)
 
                     task = asyncio.create_task(_timed_close())
-                    app_state.auto_close_tasks[state.channel_id] = task
+                    app_state.auto_close_tasks[state.game_id] = task
                     log.info(
-                        "Restored auto-close timer for channel %s (%.0fs remaining).",
-                        state.channel_id,
+                        "Restored auto-close timer for game %s (%.0fs remaining).",
+                        state.game_id,
                         remaining,
                     )
             else:
-                log.warning("Active round in channel %s is missing a message_id.", state.channel_id)
-                await app_state.store.delete_round(state.channel_id)
+                log.warning("Active round for game %s is missing a message_id.", state.game_id)
+                await app_state.store.delete_round(state.game_id)
 
         for state in await app_state.store.load_pending_questions():
             if state.prompt_message_id is not None:
-                app_state.pending_questions[state.channel_id] = state
-                self.add_view(SixtyNineQuestionView(state.channel_id), message_id=state.prompt_message_id)
+                app_state.pending_questions[state.game_id] = state
+                self.add_view(SixtyNineQuestionView(state.game_id), message_id=state.prompt_message_id)
             else:
                 log.warning(
-                    "Pending 69 question in channel %s is missing a prompt_message_id.",
-                    state.channel_id,
+                    "Pending question for game %s is missing a prompt_message_id.",
+                    state.game_id,
                 )
-                await app_state.store.delete_pending_question(state.channel_id)
+                await app_state.store.delete_pending_question(state.game_id)
 
         if DEBUG:
             if DEBUG_GUILD_ID is None:

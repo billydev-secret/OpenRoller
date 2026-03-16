@@ -18,21 +18,22 @@ from .models import PendingQuestionState, RiskyRollState, RoundResult
 log = logging.getLogger(__name__)
 
 
-async def auto_close_round(client: discord.Client, channel_id: int) -> None:
-    async with app_state.get_channel_lock(channel_id):
-        app_state.auto_close_tasks.pop(channel_id, None)
+async def auto_close_round(client: discord.Client, game_id: str) -> None:
+    async with app_state.get_game_lock(game_id):
+        app_state.auto_close_tasks.pop(game_id, None)
 
-        state = app_state.active_games.get(channel_id)
+        state = app_state.active_games.get(game_id)
         if not state or not state.is_open:
             return
 
+        channel_id = state.channel_id
         resolution = state.resolve()
         channel = await get_text_channel(client, channel_id)
 
         if resolution.result_type in (RoundResult.NOT_ENOUGH, RoundResult.WAITING_FOR_REROLLS):
             state.is_open = False
-            app_state.active_games.pop(channel_id, None)
-            await app_state.store.delete_round(channel_id)
+            app_state.active_games.pop(game_id, None)
+            await app_state.store.delete_round(game_id)
             if channel is not None:
                 await disable_round_message(state, channel)
                 await channel.send("Round auto-closed: not enough players rolled.")
@@ -57,7 +58,7 @@ async def auto_close_round(client: discord.Client, channel_id: int) -> None:
                 title="Lowest Roll Tiebreaker",
             )
 
-        closed_view = RiskyRollView(channel_id)
+        closed_view = RiskyRollView(game_id)
         closed_view.disable_all_items()
 
         if state.message_id is not None and channel is not None:
@@ -65,12 +66,13 @@ async def auto_close_round(client: discord.Client, channel_id: int) -> None:
                 message = await channel.fetch_message(state.message_id)
                 await message.edit(embed=build_embed(state), view=closed_view)
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                log.exception("Auto-close: failed to edit round message in #%s.", channel.name)
+                log.exception("Auto-close: failed to edit round message in #%s.", getattr(channel, "name", channel_id))
 
-        app_state.active_games.pop(channel_id, None)
-        await app_state.store.delete_round(channel_id)
+        app_state.active_games.pop(game_id, None)
+        await app_state.store.delete_round(game_id)
 
         if channel is None:
+            log.error("Auto-close: could not access channel %s; round closed with no prompt sent.", channel_id)
             return
 
         if resolution.result_type in (RoundResult.SIXTYNINE, RoundResult.SIXTYNINE_TIE):
@@ -79,22 +81,24 @@ async def auto_close_round(client: discord.Client, channel_id: int) -> None:
                 guild_id=state.guild_id,
                 winner_id=state.highest_user,
                 participant_user_ids=set(state.rolls),
+                game_id=game_id,
                 prompt_kind="room",
             )
         else:
             if state.lowest_user is None:
-                log.warning("Auto-close: no lowest_user in #%s.", channel.name)
+                log.warning("Auto-close: no lowest_user for game %s.", game_id)
                 return
             prompt_state = PendingQuestionState(
                 channel_id=channel_id,
                 guild_id=state.guild_id,
                 winner_id=state.highest_user,
                 participant_user_ids={state.lowest_user},
+                game_id=game_id,
                 lowest_tie_user_ids=set(state.lowest_tie_user_ids),
                 prompt_kind="direct",
             )
 
-        question_view = SixtyNineQuestionView(channel_id)
+        question_view = SixtyNineQuestionView(game_id)
         prompt_message: discord.Message | None = None
 
         try:
@@ -104,24 +108,28 @@ async def auto_close_round(client: discord.Client, channel_id: int) -> None:
                 view=question_view,
             )
             prompt_state.prompt_message_id = prompt_message.id
-            app_state.pending_questions[channel_id] = prompt_state
+            app_state.pending_questions[game_id] = prompt_state
             await app_state.store.save_pending_question(prompt_state)
         except Exception:
-            app_state.pending_questions.pop(channel_id, None)
-            await app_state.store.delete_pending_question(channel_id)
+            log.exception("Auto-close: failed to send winner prompt for game %s.", game_id)
+            app_state.pending_questions.pop(game_id, None)
+            await app_state.store.delete_pending_question(game_id)
             if prompt_message is not None:
                 await disable_pending_question_message(
                     client,
                     prompt_state,
                     "Risky Rolls could not prepare the question prompt. Start a new round.",
                 )
-            raise
+            try:
+                await channel.send("The round ended but the winner prompt could not be sent. Please start a new round.")
+            except Exception:
+                log.exception("Auto-close: also failed to send fallback message for game %s.", game_id)
 
 
 class RiskyRollView(discord.ui.View):
-    def __init__(self, channel_id: int):
+    def __init__(self, game_id: str):
         super().__init__(timeout=None)
-        self.channel_id = channel_id
+        self.game_id = game_id
 
     def disable_all_items(self) -> None:
         for item in self.children:
@@ -129,7 +137,7 @@ class RiskyRollView(discord.ui.View):
                 item.disabled = True
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
-        log.exception("Unhandled error in RiskyRollView (channel %s)", self.channel_id, exc_info=error)
+        log.exception("Unhandled error in RiskyRollView (game %s)", self.game_id, exc_info=error)
         msg = "Something went wrong. Please try again."
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
@@ -142,8 +150,8 @@ class RiskyRollView(discord.ui.View):
         custom_id="riskyroller:roll",
     )
     async def roll_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        async with app_state.get_channel_lock(self.channel_id):
-            state = app_state.active_games.get(self.channel_id)
+        async with app_state.get_game_lock(self.game_id):
+            state = app_state.active_games.get(self.game_id)
             if not state or not state.is_open:
                 await interaction.response.send_message("No open round to roll in.", ephemeral=True)
                 return
@@ -161,7 +169,7 @@ class RiskyRollView(discord.ui.View):
 
             log.info(
                 "Channel #%s: %s rolled %s",
-                getattr(interaction.channel, "name", self.channel_id),
+                getattr(interaction.channel, "name", state.channel_id),
                 interaction.user.display_name,
                 roll,
             )
@@ -169,13 +177,13 @@ class RiskyRollView(discord.ui.View):
             await interaction.response.edit_message(embed=build_embed(state), view=self)
 
             if state.auto_close_players and len(state.rolls) >= state.auto_close_players:
-                task = app_state.auto_close_tasks.pop(self.channel_id, None)
+                task = app_state.auto_close_tasks.pop(self.game_id, None)
                 if task:
                     task.cancel()
                 close_task = asyncio.create_task(
-                    auto_close_round(interaction.client, self.channel_id)
+                    auto_close_round(interaction.client, self.game_id)
                 )
-                app_state.auto_close_tasks[self.channel_id] = close_task
+                app_state.auto_close_tasks[self.game_id] = close_task
 
     @discord.ui.button(
         label="Close Round",
@@ -183,8 +191,8 @@ class RiskyRollView(discord.ui.View):
         custom_id="riskyroller:close",
     )
     async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        async with app_state.get_channel_lock(self.channel_id):
-            state = app_state.active_games.get(self.channel_id)
+        async with app_state.get_game_lock(self.game_id):
+            state = app_state.active_games.get(self.game_id)
             if not state or not state.is_open:
                 await interaction.response.send_message("No active game.", ephemeral=True)
                 return
@@ -210,7 +218,7 @@ class RiskyRollView(discord.ui.View):
                 await interaction.response.send_message("At least 2 players must roll.", ephemeral=True)
                 return
 
-            task = app_state.auto_close_tasks.pop(self.channel_id, None)
+            task = app_state.auto_close_tasks.pop(self.game_id, None)
             if task:
                 task.cancel()
 
@@ -220,7 +228,7 @@ class RiskyRollView(discord.ui.View):
                     resolution.rolloff_user_ids,
                     resolution.rolloff_rounds,
                     state.highest_user,
-                    self.channel_id,
+                    state.channel_id,
                 )
 
             if resolution.lowest_rolloff_rounds:
@@ -229,20 +237,20 @@ class RiskyRollView(discord.ui.View):
                     resolution.lowest_rolloff_user_ids,
                     resolution.lowest_rolloff_rounds,
                     state.lowest_user,
-                    self.channel_id,
+                    state.channel_id,
                     title="Lowest Roll Tiebreaker",
                 )
 
-            app_state.active_games.pop(self.channel_id, None)
-            await app_state.store.delete_round(self.channel_id)
+            app_state.active_games.pop(self.game_id, None)
+            await app_state.store.delete_round(self.game_id)
 
-            closed_view = RiskyRollView(self.channel_id)
+            closed_view = RiskyRollView(self.game_id)
             closed_view.disable_all_items()
 
             try:
                 await interaction.response.edit_message(embed=build_embed(state), view=closed_view)
             except discord.HTTPException:
-                log.exception("Failed to close round in #%s.", getattr(interaction.channel, "name", self.channel_id))
+                log.exception("Failed to close round in #%s.", getattr(interaction.channel, "name", state.channel_id))
                 await interaction.response.send_message(
                     "Round closed, but the message could not be updated. Start a new round.",
                     ephemeral=True,
@@ -251,13 +259,14 @@ class RiskyRollView(discord.ui.View):
 
             if resolution.result_type in (RoundResult.SIXTYNINE, RoundResult.SIXTYNINE_TIE):
                 prompt_state = PendingQuestionState(
-                    channel_id=self.channel_id,
+                    channel_id=state.channel_id,
                     guild_id=state.guild_id,
                     winner_id=state.highest_user,
                     participant_user_ids=set(state.rolls),
+                    game_id=self.game_id,
                     prompt_kind="room",
                 )
-                question_view = SixtyNineQuestionView(self.channel_id)
+                question_view = SixtyNineQuestionView(self.game_id)
                 prompt_message: discord.WebhookMessage | None = None
 
                 try:
@@ -268,11 +277,11 @@ class RiskyRollView(discord.ui.View):
                         wait=True,
                     )
                     prompt_state.prompt_message_id = prompt_message.id
-                    app_state.pending_questions[self.channel_id] = prompt_state
+                    app_state.pending_questions[self.game_id] = prompt_state
                     await app_state.store.save_pending_question(prompt_state)
                 except Exception:
-                    app_state.pending_questions.pop(self.channel_id, None)
-                    await app_state.store.delete_pending_question(self.channel_id)
+                    app_state.pending_questions.pop(self.game_id, None)
+                    await app_state.store.delete_pending_question(self.game_id)
                     if prompt_message is not None:
                         await disable_pending_question_message(
                             interaction.client,
@@ -284,20 +293,21 @@ class RiskyRollView(discord.ui.View):
 
             if state.lowest_user is None:
                 log.warning(
-                    "Round closed in #%s without a lowest_user. This should not happen.",
-                    getattr(interaction.channel, "name", self.channel_id),
+                    "Round closed for game %s without a lowest_user. This should not happen.",
+                    self.game_id,
                 )
                 return
 
             prompt_state = PendingQuestionState(
-                channel_id=self.channel_id,
+                channel_id=state.channel_id,
                 guild_id=state.guild_id,
                 winner_id=state.highest_user,
                 participant_user_ids={state.lowest_user},
+                game_id=self.game_id,
                 lowest_tie_user_ids=set(state.lowest_tie_user_ids),
                 prompt_kind="direct",
             )
-            question_view = SixtyNineQuestionView(self.channel_id)
+            question_view = SixtyNineQuestionView(self.game_id)
             prompt_message = None
 
             try:
@@ -308,11 +318,11 @@ class RiskyRollView(discord.ui.View):
                     wait=True,
                 )
                 prompt_state.prompt_message_id = prompt_message.id
-                app_state.pending_questions[self.channel_id] = prompt_state
+                app_state.pending_questions[self.game_id] = prompt_state
                 await app_state.store.save_pending_question(prompt_state)
             except Exception:
-                app_state.pending_questions.pop(self.channel_id, None)
-                await app_state.store.delete_pending_question(self.channel_id)
+                app_state.pending_questions.pop(self.game_id, None)
+                await app_state.store.delete_pending_question(self.game_id)
                 if prompt_message is not None:
                     await disable_pending_question_message(
                         interaction.client,
@@ -330,16 +340,16 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
         max_length=300,
     )
 
-    def __init__(self, channel_id: int):
+    def __init__(self, game_id: str):
         super().__init__()
-        self.channel_id = channel_id
+        self.game_id = game_id
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        async with app_state.get_channel_lock(self.channel_id):
-            state = app_state.pending_questions.get(self.channel_id)
+        async with app_state.get_game_lock(self.game_id):
+            state = app_state.pending_questions.get(self.game_id)
             if state is None:
                 await interaction.response.send_message(
-                    "There is no pending winner question for this channel.",
+                    "There is no pending winner question for this round.",
                     ephemeral=True,
                 )
                 return
@@ -375,15 +385,15 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                     ephemeral=False,
                 )
             except discord.HTTPException:
-                log.exception("Failed to deliver winner question in #%s.", getattr(interaction.channel, "name", self.channel_id))
+                log.exception("Failed to deliver winner question for game %s.", self.game_id)
                 await interaction.followup.send(
                     "I could not send the question. Please try again.",
                     ephemeral=True,
                 )
                 return
 
-            app_state.pending_questions.pop(self.channel_id, None)
-            await app_state.store.delete_pending_question(self.channel_id)
+            app_state.pending_questions.pop(self.game_id, None)
+            await app_state.store.delete_pending_question(self.game_id)
             await disable_pending_question_message(
                 interaction.client,
                 state,
@@ -398,9 +408,9 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
 
 
 class SixtyNineQuestionView(discord.ui.View):
-    def __init__(self, channel_id: int):
+    def __init__(self, game_id: str):
         super().__init__(timeout=None)
-        self.channel_id = channel_id
+        self.game_id = game_id
 
     def disable_all_items(self) -> None:
         for item in self.children:
@@ -408,7 +418,7 @@ class SixtyNineQuestionView(discord.ui.View):
                 item.disabled = True
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
-        log.exception("Unhandled error in SixtyNineQuestionView (channel %s)", self.channel_id, exc_info=error)
+        log.exception("Unhandled error in SixtyNineQuestionView (game %s)", self.game_id, exc_info=error)
         msg = "Something went wrong. Please try again."
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
@@ -425,11 +435,11 @@ class SixtyNineQuestionView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ) -> None:
-        async with app_state.get_channel_lock(self.channel_id):
-            state = app_state.pending_questions.get(self.channel_id)
+        async with app_state.get_game_lock(self.game_id):
+            state = app_state.pending_questions.get(self.game_id)
             if state is None:
                 await interaction.response.send_message(
-                    "There is no pending winner question for this channel.",
+                    "There is no pending winner question for this round.",
                     ephemeral=True,
                 )
                 return
@@ -441,7 +451,7 @@ class SixtyNineQuestionView(discord.ui.View):
                 )
                 return
 
-        await interaction.response.send_modal(SixtyNineQuestionModal(self.channel_id))
+        await interaction.response.send_modal(SixtyNineQuestionModal(self.game_id))
 
 
 async def disable_round_message(
@@ -456,7 +466,7 @@ async def disable_round_message(
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         return
 
-    view = RiskyRollView(state.channel_id)
+    view = RiskyRollView(state.game_id)
     view.disable_all_items()
 
     try:
@@ -482,7 +492,7 @@ async def disable_pending_question_message(
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         return
 
-    view = SixtyNineQuestionView(state.channel_id)
+    view = SixtyNineQuestionView(state.game_id)
     view.disable_all_items()
 
     try:

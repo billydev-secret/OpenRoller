@@ -8,6 +8,8 @@ from .models import PendingQuestionState, RiskyRollState
 
 log = logging.getLogger(__name__)
 
+MAX_GAMES_PER_CHANNEL = 10
+
 
 class StateStore:
     def __init__(self, path: str):
@@ -22,6 +24,24 @@ class StateStore:
 
     def _initialize(self) -> None:
         with self._connect() as conn:
+            # Detect old schema (channel_id as primary key, no game_id column).
+            # If found, drop all tables — in-flight game state is ephemeral and
+            # will be recreated on the next /risky_start.
+            existing_tables = {
+                row[0]
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+            if "active_rounds" in existing_tables:
+                columns = {row["name"] for row in conn.execute("PRAGMA table_info(active_rounds)").fetchall()}
+                if "game_id" not in columns:
+                    log.warning(
+                        "Migrating database schema to multi-game support (game_id primary key). "
+                        "Any in-progress rounds will be reset."
+                    )
+                    conn.execute("DROP TABLE IF EXISTS round_rolls")
+                    conn.execute("DROP TABLE IF EXISTS active_rounds")
+                    conn.execute("DROP TABLE IF EXISTS pending_questions")
+
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS guild_settings (
@@ -30,7 +50,8 @@ class StateStore:
                 );
 
                 CREATE TABLE IF NOT EXISTS active_rounds (
-                    channel_id INTEGER PRIMARY KEY,
+                    game_id TEXT PRIMARY KEY,
+                    channel_id INTEGER NOT NULL,
                     guild_id INTEGER NOT NULL,
                     opener_id INTEGER NOT NULL,
                     message_id INTEGER,
@@ -44,44 +65,25 @@ class StateStore:
                 );
 
                 CREATE TABLE IF NOT EXISTS round_rolls (
-                    channel_id INTEGER NOT NULL,
+                    game_id TEXT NOT NULL,
                     user_id INTEGER NOT NULL,
                     roll INTEGER NOT NULL,
-                    PRIMARY KEY (channel_id, user_id),
-                    FOREIGN KEY (channel_id) REFERENCES active_rounds(channel_id) ON DELETE CASCADE
+                    PRIMARY KEY (game_id, user_id),
+                    FOREIGN KEY (game_id) REFERENCES active_rounds(game_id) ON DELETE CASCADE
                 );
 
                 CREATE TABLE IF NOT EXISTS pending_questions (
-                    channel_id INTEGER PRIMARY KEY,
+                    game_id TEXT PRIMARY KEY,
+                    channel_id INTEGER NOT NULL,
                     guild_id INTEGER NOT NULL,
                     winner_id INTEGER NOT NULL,
                     prompt_message_id INTEGER,
                     participant_user_ids TEXT NOT NULL,
+                    lowest_tie_user_ids TEXT,
                     prompt_kind TEXT NOT NULL DEFAULT 'room'
                 );
                 """
             )
-
-            active_round_columns = {
-                row["name"]
-                for row in conn.execute("PRAGMA table_info(active_rounds)").fetchall()
-            }
-            if "reroll_user_ids" not in active_round_columns:
-                conn.execute("ALTER TABLE active_rounds ADD COLUMN reroll_user_ids TEXT")
-            for col in ("auto_close_players", "auto_close_minutes"):
-                if col not in active_round_columns:
-                    conn.execute(f"ALTER TABLE active_rounds ADD COLUMN {col} INTEGER")
-            if "created_at" not in active_round_columns:
-                conn.execute("ALTER TABLE active_rounds ADD COLUMN created_at REAL")
-
-            pending_question_columns = {
-                row["name"]
-                for row in conn.execute("PRAGMA table_info(pending_questions)").fetchall()
-            }
-            if "prompt_kind" not in pending_question_columns:
-                conn.execute(
-                    "ALTER TABLE pending_questions ADD COLUMN prompt_kind TEXT NOT NULL DEFAULT 'room'"
-                )
 
     async def initialize(self) -> None:
         await asyncio.to_thread(self._initialize)
@@ -115,6 +117,7 @@ class StateStore:
             conn.execute(
                 """
                 INSERT INTO active_rounds (
+                    game_id,
                     channel_id,
                     guild_id,
                     opener_id,
@@ -127,8 +130,9 @@ class StateStore:
                     auto_close_minutes,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(channel_id) DO UPDATE SET
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(game_id) DO UPDATE SET
+                    channel_id = excluded.channel_id,
                     guild_id = excluded.guild_id,
                     opener_id = excluded.opener_id,
                     message_id = excluded.message_id,
@@ -141,6 +145,7 @@ class StateStore:
                     created_at = excluded.created_at
                 """,
                 (
+                    state.game_id,
                     state.channel_id,
                     state.guild_id,
                     state.opener_id,
@@ -155,53 +160,59 @@ class StateStore:
                 ),
             )
 
-            conn.execute("DELETE FROM round_rolls WHERE channel_id = ?", (state.channel_id,))
+            conn.execute("DELETE FROM round_rolls WHERE game_id = ?", (state.game_id,))
             for user_id, roll in state.rolls.items():
                 conn.execute(
                     """
-                    INSERT INTO round_rolls (channel_id, user_id, roll)
+                    INSERT INTO round_rolls (game_id, user_id, roll)
                     VALUES (?, ?, ?)
-                    ON CONFLICT(channel_id, user_id) DO UPDATE SET roll = excluded.roll
+                    ON CONFLICT(game_id, user_id) DO UPDATE SET roll = excluded.roll
                     """,
-                    (state.channel_id, user_id, roll),
+                    (state.game_id, user_id, roll),
                 )
 
     async def save_round(self, state: RiskyRollState) -> None:
         await asyncio.to_thread(self._save_round, state)
 
-    def _delete_round(self, channel_id: int) -> None:
+    def _delete_round(self, game_id: str) -> None:
         with self._connect() as conn:
-            conn.execute("DELETE FROM active_rounds WHERE channel_id = ?", (channel_id,))
+            conn.execute("DELETE FROM active_rounds WHERE game_id = ?", (game_id,))
 
-    async def delete_round(self, channel_id: int) -> None:
-        await asyncio.to_thread(self._delete_round, channel_id)
+    async def delete_round(self, game_id: str) -> None:
+        await asyncio.to_thread(self._delete_round, game_id)
 
     def _save_pending_question(self, state: PendingQuestionState) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO pending_questions (
+                    game_id,
                     channel_id,
                     guild_id,
                     winner_id,
                     prompt_message_id,
                     participant_user_ids,
+                    lowest_tie_user_ids,
                     prompt_kind
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(channel_id) DO UPDATE SET
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(game_id) DO UPDATE SET
+                    channel_id = excluded.channel_id,
                     guild_id = excluded.guild_id,
                     winner_id = excluded.winner_id,
                     prompt_message_id = excluded.prompt_message_id,
                     participant_user_ids = excluded.participant_user_ids,
+                    lowest_tie_user_ids = excluded.lowest_tie_user_ids,
                     prompt_kind = excluded.prompt_kind
                 """,
                 (
+                    state.game_id,
                     state.channel_id,
                     state.guild_id,
                     state.winner_id,
                     state.prompt_message_id,
                     serialize_user_ids(state.participant_user_ids),
+                    serialize_user_ids(state.lowest_tie_user_ids),
                     state.prompt_kind,
                 ),
             )
@@ -209,18 +220,19 @@ class StateStore:
     async def save_pending_question(self, state: PendingQuestionState) -> None:
         await asyncio.to_thread(self._save_pending_question, state)
 
-    def _delete_pending_question(self, channel_id: int) -> None:
+    def _delete_pending_question(self, game_id: str) -> None:
         with self._connect() as conn:
-            conn.execute("DELETE FROM pending_questions WHERE channel_id = ?", (channel_id,))
+            conn.execute("DELETE FROM pending_questions WHERE game_id = ?", (game_id,))
 
-    async def delete_pending_question(self, channel_id: int) -> None:
-        await asyncio.to_thread(self._delete_pending_question, channel_id)
+    async def delete_pending_question(self, game_id: str) -> None:
+        await asyncio.to_thread(self._delete_pending_question, game_id)
 
     def _load_active_rounds(self) -> list[RiskyRollState]:
         with self._connect() as conn:
             round_rows = conn.execute(
                 """
                 SELECT
+                    game_id,
                     channel_id,
                     guild_id,
                     opener_id,
@@ -238,7 +250,8 @@ class StateStore:
             ).fetchall()
 
             states = {
-                int(row["channel_id"]): RiskyRollState(
+                str(row["game_id"]): RiskyRollState(
+                    game_id=str(row["game_id"]),
                     channel_id=int(row["channel_id"]),
                     guild_id=int(row["guild_id"]),
                     opener_id=int(row["opener_id"]),
@@ -256,15 +269,15 @@ class StateStore:
 
             roll_rows = conn.execute(
                 """
-                SELECT channel_id, user_id, roll FROM round_rolls
-                WHERE channel_id IN (SELECT channel_id FROM active_rounds WHERE is_open = 1)
+                SELECT game_id, user_id, roll FROM round_rolls
+                WHERE game_id IN (SELECT game_id FROM active_rounds WHERE is_open = 1)
                 ORDER BY roll DESC
                 """
             ).fetchall()
 
         for row in roll_rows:
-            channel_id = int(row["channel_id"])
-            state = states.get(channel_id)
+            game_id = str(row["game_id"])
+            state = states.get(game_id)
             if state is None:
                 continue
             state.rolls[int(row["user_id"])] = int(row["roll"])
@@ -279,11 +292,13 @@ class StateStore:
             rows = conn.execute(
                 """
                 SELECT
+                    game_id,
                     channel_id,
                     guild_id,
                     winner_id,
                     prompt_message_id,
                     participant_user_ids,
+                    lowest_tie_user_ids,
                     prompt_kind
                 FROM pending_questions
                 """
@@ -291,13 +306,15 @@ class StateStore:
 
         return [
             PendingQuestionState(
+                game_id=str(row["game_id"]),
                 channel_id=int(row["channel_id"]),
                 guild_id=int(row["guild_id"]),
                 winner_id=int(row["winner_id"]),
+                participant_user_ids=deserialize_user_ids(row["participant_user_ids"]),
                 prompt_message_id=(
                     int(row["prompt_message_id"]) if row["prompt_message_id"] is not None else None
                 ),
-                participant_user_ids=deserialize_user_ids(row["participant_user_ids"]),
+                lowest_tie_user_ids=deserialize_user_ids(row["lowest_tie_user_ids"]),
                 prompt_kind=str(row["prompt_kind"] or "room"),
             )
             for row in rows

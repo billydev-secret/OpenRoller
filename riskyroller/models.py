@@ -1,5 +1,6 @@
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
@@ -33,6 +34,7 @@ class RiskyRollState:
     channel_id: int
     guild_id: int
     opener_id: int
+    game_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     message_id: int | None = None
     rolls: dict[int, int] = field(default_factory=dict)
     is_open: bool = True
@@ -112,7 +114,7 @@ class RiskyRollState:
                 self.highest_user = winner_id
                 self.lowest_user = None
                 self.is_open = False
-                log.info("Channel %s: 69 tie resolved via rolloff. Winner: %s", self.channel_id, winner_id)
+                log.info("Game %s: 69 tie resolved via rolloff. Winner: %s", self.game_id, winner_id)
                 return ResolutionResult(
                     result_type=RoundResult.SIXTYNINE_TIE,
                     rolloff_user_ids=sixtyniners,
@@ -121,7 +123,7 @@ class RiskyRollState:
             self.highest_user = sixtyniners[0]
             self.lowest_user = None
             self.is_open = False
-            log.info("Channel %s: 69 rolled by user %s", self.channel_id, sixtyniners[0])
+            log.info("Game %s: 69 rolled by user %s", self.game_id, sixtyniners[0])
             return ResolutionResult(result_type=RoundResult.SIXTYNINE)
 
         # Check for tie on highest roll
@@ -148,7 +150,7 @@ class RiskyRollState:
             self.lowest_user = lowest_id
             self.is_open = False
             self.reroll_user_ids.clear()
-            log.info("Channel %s: Highest tie resolved. Winner: %s, Lowest: %s", self.channel_id, winner_id, lowest_id)
+            log.info("Game %s: Highest tie resolved. Winner: %s, Lowest: %s", self.game_id, winner_id, lowest_id)
             return ResolutionResult(
                 result_type=RoundResult.TIE,
                 rolloff_user_ids=highest_users,
@@ -163,14 +165,14 @@ class RiskyRollState:
         if len(lowest_users) > 1:
             lowest_id, lowest_rolloff_rounds = run_tie_rolloff(lowest_users)
             self.lowest_tie_user_ids = set(lowest_users)
-            log.info("Channel %s: Lowest tie resolved via rolloff. Selected: %s", self.channel_id, lowest_id)
+            log.info("Game %s: Lowest tie resolved via rolloff. Selected: %s", self.game_id, lowest_id)
         else:
             lowest_id = lowest_users[0]
 
         self.highest_user = highest_users[0]
         self.lowest_user = lowest_id
         self.is_open = False
-        log.info("Channel %s: Round resolved. Winner: %s, Lowest: %s", self.channel_id, highest_users[0], lowest_id)
+        log.info("Game %s: Round resolved. Winner: %s, Lowest: %s", self.game_id, highest_users[0], lowest_id)
         return ResolutionResult(
             result_type=RoundResult.OK,
             lowest_rolloff_user_ids=lowest_users if lowest_rolloff_rounds else [],
@@ -184,6 +186,7 @@ class PendingQuestionState:
     guild_id: int
     winner_id: int
     participant_user_ids: set[int]
+    game_id: str
     lowest_tie_user_ids: set[int] = field(default_factory=set)
     prompt_message_id: int | None = None
     prompt_kind: str = "room"

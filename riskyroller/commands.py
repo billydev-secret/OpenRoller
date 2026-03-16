@@ -7,6 +7,7 @@ from discord import app_commands
 from . import state as app_state
 from .formatters import build_embed
 from .models import RiskyRollState
+from .store import MAX_GAMES_PER_CHANNEL
 from .views import RiskyRollView, SixtyNineQuestionView, auto_close_round, disable_pending_question_message, disable_round_message
 
 log = logging.getLogger(__name__)
@@ -35,9 +36,14 @@ def setup(bot: discord.Client) -> None:
             return
 
         async with app_state.get_channel_lock(interaction.channel.id):
-            if interaction.channel.id in app_state.active_games:
+            active_in_channel = sum(
+                1 for s in app_state.active_games.values()
+                if s.channel_id == interaction.channel.id
+            )
+            if active_in_channel >= MAX_GAMES_PER_CHANNEL:
                 await interaction.response.send_message(
-                    "A game is already active in this channel.",
+                    f"This channel already has {MAX_GAMES_PER_CHANNEL} active games. "
+                    "Close one before starting another.",
                     ephemeral=True,
                 )
                 return
@@ -49,7 +55,7 @@ def setup(bot: discord.Client) -> None:
                 auto_close_players=auto_close_players if auto_close_players and auto_close_players >= 2 else None,
                 auto_close_minutes=auto_close_minutes if auto_close_minutes and auto_close_minutes > 0 else None,
             )
-            app_state.active_games[interaction.channel.id] = state
+            app_state.active_games[state.game_id] = state
             await app_state.store.save_round(state)
 
             role_id = app_state.ping_roles.get(interaction.guild.id)
@@ -60,7 +66,7 @@ def setup(bot: discord.Client) -> None:
                 content = f"# <@&{role_id}> A new Risky Rolls round has begun!"
                 allowed_mentions = discord.AllowedMentions(roles=True)
 
-            view = RiskyRollView(interaction.channel.id)
+            view = RiskyRollView(state.game_id)
             try:
                 await interaction.response.send_message(
                     content=content,
@@ -74,18 +80,18 @@ def setup(bot: discord.Client) -> None:
 
                 if auto_close_minutes and auto_close_minutes > 0:
                     _client = interaction.client
-                    _channel_id = interaction.channel.id
+                    _game_id = state.game_id
                     _minutes = auto_close_minutes
 
                     async def _timed_close() -> None:
                         await asyncio.sleep(_minutes * 60)
-                        await auto_close_round(_client, _channel_id)
+                        await auto_close_round(_client, _game_id)
 
                     task = asyncio.create_task(_timed_close())
-                    app_state.auto_close_tasks[interaction.channel.id] = task
+                    app_state.auto_close_tasks[state.game_id] = task
             except Exception:
-                app_state.active_games.pop(interaction.channel.id, None)
-                await app_state.store.delete_round(interaction.channel.id)
+                app_state.active_games.pop(state.game_id, None)
+                await app_state.store.delete_round(state.game_id)
                 state.is_open = False
 
                 if interaction.response.is_done():
@@ -94,7 +100,7 @@ def setup(bot: discord.Client) -> None:
                     except (discord.NotFound, discord.HTTPException):
                         pass
                     else:
-                        failed_view = RiskyRollView(interaction.channel.id)
+                        failed_view = RiskyRollView(state.game_id)
                         failed_view.disable_all_items()
                         try:
                             await message.edit(
@@ -133,7 +139,7 @@ def setup(bot: discord.Client) -> None:
 
     @bot.tree.command(
         name="risky_reset_state",
-        description="Clear active round and pending prompts in this channel",
+        description="Clear all active rounds and pending prompts in this channel",
     )
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(administrator=True)
@@ -146,34 +152,43 @@ def setup(bot: discord.Client) -> None:
             return
 
         async with app_state.get_channel_lock(interaction.channel.id):
-            task = app_state.auto_close_tasks.pop(interaction.channel.id, None)
-            if task:
-                task.cancel()
+            channel_id = interaction.channel.id
 
-            state = app_state.active_games.pop(interaction.channel.id, None)
-            pending_state = app_state.pending_questions.pop(interaction.channel.id, None)
+            game_ids = [
+                gid for gid, s in app_state.active_games.items()
+                if s.channel_id == channel_id
+            ]
+            question_ids = [
+                gid for gid, s in app_state.pending_questions.items()
+                if s.channel_id == channel_id
+            ]
 
-            if state is None and pending_state is None:
-                await app_state.store.delete_round(interaction.channel.id)
-                await app_state.store.delete_pending_question(interaction.channel.id)
+            if not game_ids and not question_ids:
                 await interaction.response.send_message(
                     "No active or pending Risky Rolls state was found in this channel.",
                     ephemeral=True,
                 )
                 return
 
-            if state is not None:
-                state.is_open = False
-                await disable_round_message(state, interaction.channel)
-                await app_state.store.delete_round(interaction.channel.id)
+            for game_id in game_ids:
+                task = app_state.auto_close_tasks.pop(game_id, None)
+                if task:
+                    task.cancel()
+                state = app_state.active_games.pop(game_id, None)
+                if state is not None:
+                    state.is_open = False
+                    await disable_round_message(state, interaction.channel)
+                await app_state.store.delete_round(game_id)
 
-            if pending_state is not None:
-                await disable_pending_question_message(
-                    interaction.client,
-                    pending_state,
-                    "The pending 69 question prompt was cleared by an administrator.",
-                )
-                await app_state.store.delete_pending_question(interaction.channel.id)
+            for game_id in question_ids:
+                pending_state = app_state.pending_questions.pop(game_id, None)
+                if pending_state is not None:
+                    await disable_pending_question_message(
+                        interaction.client,
+                        pending_state,
+                        "The pending question prompt was cleared by an administrator.",
+                    )
+                await app_state.store.delete_pending_question(game_id)
 
             await interaction.response.send_message(
                 "Reset the Risky Rolls state for this channel.",
