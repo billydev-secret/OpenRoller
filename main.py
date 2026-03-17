@@ -13,3 +13,4 @@ if __name__ == "__main__":
     if not TOKEN:
         raise RuntimeError("DISCORD_TOKEN is not set in the environment.")
     bot.run(TOKEN)
+can

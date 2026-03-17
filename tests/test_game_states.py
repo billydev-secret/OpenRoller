@@ -1,4 +1,5 @@
 import unittest
+import uuid
 from unittest.mock import patch
 
 from riskyroller.formatters import (
@@ -296,6 +297,7 @@ class GameStatePresentationTests(unittest.TestCase):
             guild_id=2,
             winner_id=10,
             participant_user_ids={30, 20},
+            game_id=str(uuid.uuid4()),
             prompt_kind="direct",
         )
 
@@ -310,6 +312,7 @@ class GameStatePresentationTests(unittest.TestCase):
             guild_id=2,
             winner_id=10,
             participant_user_ids={20},
+            game_id=str(uuid.uuid4()),
             lowest_tie_user_ids={20, 30},
             prompt_kind="direct",
         )
@@ -326,6 +329,7 @@ class GameStatePresentationTests(unittest.TestCase):
             guild_id=2,
             winner_id=10,
             participant_user_ids={10, 20, 30},
+            game_id=str(uuid.uuid4()),
             prompt_kind="room",
         )
 
@@ -340,6 +344,7 @@ class GameStatePresentationTests(unittest.TestCase):
             guild_id=2,
             winner_id=42,
             participant_user_ids={8, 9},
+            game_id=str(uuid.uuid4()),
             prompt_kind="direct",
         )
 
@@ -353,6 +358,7 @@ class GameStatePresentationTests(unittest.TestCase):
             guild_id=2,
             winner_id=42,
             participant_user_ids={8, 9, 42},
+            game_id=str(uuid.uuid4()),
             prompt_kind="room",
         )
 

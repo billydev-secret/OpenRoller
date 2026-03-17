@@ -61,11 +61,19 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
         closed_view = RiskyRollView(game_id)
         closed_view.disable_all_items()
 
+        channel_forbidden = False
         if state.message_id is not None and channel is not None:
             try:
                 message = await channel.fetch_message(state.message_id)
                 await message.edit(embed=build_embed(state), view=closed_view)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            except discord.Forbidden:
+                channel_forbidden = True
+                log.error(
+                    "Auto-close: bot is missing access to #%s (game %s). "
+                    "Check channel permissions and that the bot can access NSFW channels.",
+                    getattr(channel, "name", channel_id), game_id,
+                )
+            except (discord.NotFound, discord.HTTPException):
                 log.exception("Auto-close: failed to edit round message in #%s.", getattr(channel, "name", channel_id))
 
         app_state.active_games.pop(game_id, None)
@@ -73,6 +81,13 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
 
         if channel is None:
             log.error("Auto-close: could not access channel %s; round closed with no prompt sent.", channel_id)
+            return
+
+        if channel_forbidden:
+            log.error(
+                "Auto-close: skipping winner prompt for game %s — bot has no access to #%s.",
+                game_id, getattr(channel, "name", channel_id),
+            )
             return
 
         if resolution.result_type in (RoundResult.SIXTYNINE, RoundResult.SIXTYNINE_TIE):
@@ -110,6 +125,12 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
             prompt_state.prompt_message_id = prompt_message.id
             app_state.pending_questions[game_id] = prompt_state
             await app_state.store.save_pending_question(prompt_state)
+        except discord.Forbidden:
+            log.error(
+                "Auto-close: bot is missing access to #%s (game %s). "
+                "Check channel permissions and that the bot can access NSFW channels.",
+                getattr(channel, "name", channel_id), game_id,
+            )
         except Exception:
             log.exception("Auto-close: failed to send winner prompt for game %s.", game_id)
             app_state.pending_questions.pop(game_id, None)

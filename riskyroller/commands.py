@@ -35,6 +35,24 @@ def setup(bot: discord.Client) -> None:
             )
             return
 
+        me = interaction.guild.me
+        perms = interaction.channel.permissions_for(me)
+        missing = [
+            name for allowed, name in [
+                (perms.send_messages, "Send Messages"),
+                (perms.read_message_history, "Read Message History"),
+                (perms.embed_links, "Embed Links"),
+            ]
+            if not allowed
+        ]
+        if missing:
+            await interaction.response.send_message(
+                f"I'm missing permissions in this channel: {', '.join(missing)}. "
+                "Please fix my permissions before starting a round.",
+                ephemeral=True,
+            )
+            return
+
         async with app_state.get_channel_lock(interaction.channel.id):
             active_in_channel = sum(
                 1 for s in app_state.active_games.values()

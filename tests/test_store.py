@@ -3,6 +3,7 @@ import os
 import tempfile
 import time
 import unittest
+import uuid
 
 from riskyroller.models import PendingQuestionState, RiskyRollState
 from riskyroller.store import StateStore
@@ -148,8 +149,9 @@ class StoreTests(unittest.TestCase):
     # --- delete round ---
 
     def test_delete_round_removes_round(self) -> None:
-        run(self.store.save_round(self.make_state()))
-        run(self.store.delete_round(100))
+        state = self.make_state()
+        run(self.store.save_round(state))
+        run(self.store.delete_round(state.game_id))
 
         self.assertEqual([], run(self.store.load_active_rounds()))
 
@@ -157,7 +159,7 @@ class StoreTests(unittest.TestCase):
         state = self.make_state()
         state.rolls = {11: 80}
         run(self.store.save_round(state))
-        run(self.store.delete_round(100))
+        run(self.store.delete_round(state.game_id))
 
         loaded = run(self.store.load_active_rounds())
         self.assertEqual([], loaded)
@@ -184,6 +186,7 @@ class StoreTests(unittest.TestCase):
             guild_id=200,
             winner_id=300,
             participant_user_ids={400, 500},
+            game_id=str(uuid.uuid4()),
             prompt_kind="direct",
         )
         run(self.store.save_pending_question(state))
@@ -202,6 +205,7 @@ class StoreTests(unittest.TestCase):
             guild_id=200,
             winner_id=300,
             participant_user_ids={10, 20, 30},
+            game_id=str(uuid.uuid4()),
             prompt_kind="room",
         )
         run(self.store.save_pending_question(state))
@@ -217,10 +221,11 @@ class StoreTests(unittest.TestCase):
             guild_id=200,
             winner_id=300,
             participant_user_ids={400},
+            game_id=str(uuid.uuid4()),
             prompt_kind="room",
         )
         run(self.store.save_pending_question(state))
-        run(self.store.delete_pending_question(100))
+        run(self.store.delete_pending_question(state.game_id))
 
         self.assertEqual([], run(self.store.load_pending_questions()))
 
@@ -233,6 +238,7 @@ class StoreTests(unittest.TestCase):
             guild_id=200,
             winner_id=300,
             participant_user_ids={400},
+            game_id=str(uuid.uuid4()),
             prompt_kind="room",
         )
         run(self.store.save_pending_question(state))
