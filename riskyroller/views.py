@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import math
 import random
+import time
 
 import discord
 
@@ -224,6 +226,17 @@ class RiskyRollView(discord.ui.View):
                     ephemeral=True,
                 )
                 return
+
+            min_seconds = app_state.min_game_seconds.get(state.guild_id)
+            if min_seconds:
+                elapsed = time.time() - state.created_at
+                remaining = math.ceil(min_seconds - elapsed)
+                if remaining > 0:
+                    await interaction.response.send_message(
+                        f"This round cannot be closed yet. Please wait {remaining} more second(s).",
+                        ephemeral=True,
+                    )
+                    return
 
             resolution = state.resolve()
 

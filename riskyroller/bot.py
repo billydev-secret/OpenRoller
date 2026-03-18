@@ -26,6 +26,7 @@ class Bot(discord.Client):
 
         await app_state.store.initialize()
         app_state.ping_roles.update(await app_state.store.load_ping_roles())
+        app_state.min_game_seconds.update(await app_state.store.load_min_game_times())
 
         for state in await app_state.store.load_active_rounds():
             if state.message_id is not None:

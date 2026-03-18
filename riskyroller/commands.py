@@ -156,6 +156,43 @@ def setup(bot: discord.Client) -> None:
         )
 
     @bot.tree.command(
+        name="risky_set_min_game_time",
+        description="Set the minimum time before a round can be manually closed",
+    )
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(seconds="Minimum seconds a round must be open before closing (0 to disable)")
+    async def risky_set_min_game_time(interaction: discord.Interaction, seconds: int):
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This command can only be used in a server.",
+                ephemeral=True,
+            )
+            return
+
+        if seconds < 0:
+            await interaction.response.send_message(
+                "Minimum game time cannot be negative.",
+                ephemeral=True,
+            )
+            return
+
+        if seconds == 0:
+            app_state.min_game_seconds.pop(interaction.guild.id, None)
+            await app_state.store.set_min_game_time(interaction.guild.id, None)
+            await interaction.response.send_message(
+                "Minimum game time disabled.",
+                ephemeral=True,
+            )
+        else:
+            app_state.min_game_seconds[interaction.guild.id] = seconds
+            await app_state.store.set_min_game_time(interaction.guild.id, seconds)
+            await interaction.response.send_message(
+                f"Minimum game time set to {seconds} second(s).",
+                ephemeral=True,
+            )
+
+    @bot.tree.command(
         name="risky_reset_state",
         description="Clear all active rounds and pending prompts in this channel",
     )

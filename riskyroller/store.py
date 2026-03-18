@@ -42,11 +42,17 @@ class StateStore:
                     conn.execute("DROP TABLE IF EXISTS active_rounds")
                     conn.execute("DROP TABLE IF EXISTS pending_questions")
 
+            if "guild_settings" in existing_tables:
+                gs_columns = {row["name"] for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
+                if "min_game_seconds" not in gs_columns:
+                    conn.execute("ALTER TABLE guild_settings ADD COLUMN min_game_seconds INTEGER")
+
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS guild_settings (
                     guild_id INTEGER PRIMARY KEY,
-                    ping_role_id INTEGER
+                    ping_role_id INTEGER,
+                    min_game_seconds INTEGER
                 );
 
                 CREATE TABLE IF NOT EXISTS active_rounds (
@@ -111,6 +117,30 @@ class StateStore:
 
     async def set_ping_role(self, guild_id: int, role_id: int) -> None:
         await asyncio.to_thread(self._set_ping_role, guild_id, role_id)
+
+    def _set_min_game_time(self, guild_id: int, seconds: int | None) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO guild_settings (guild_id, min_game_seconds)
+                VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET min_game_seconds = excluded.min_game_seconds
+                """,
+                (guild_id, seconds),
+            )
+
+    async def set_min_game_time(self, guild_id: int, seconds: int | None) -> None:
+        await asyncio.to_thread(self._set_min_game_time, guild_id, seconds)
+
+    def _load_min_game_times(self) -> dict[int, int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT guild_id, min_game_seconds FROM guild_settings WHERE min_game_seconds IS NOT NULL"
+            ).fetchall()
+        return {int(row["guild_id"]): int(row["min_game_seconds"]) for row in rows}
+
+    async def load_min_game_times(self) -> dict[int, int]:
+        return await asyncio.to_thread(self._load_min_game_times)
 
     def _save_round(self, state: RiskyRollState) -> None:
         with self._connect() as conn:
