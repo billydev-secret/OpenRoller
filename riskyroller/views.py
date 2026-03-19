@@ -8,7 +8,7 @@ import discord
 
 from . import state as app_state
 from .formatters import (
-    build_embed,
+    build_tracker_content,
     build_pending_prompt_content,
     build_pending_question_summary,
     format_user_mentions,
@@ -67,7 +67,7 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
         if state.message_id is not None and channel is not None:
             try:
                 message = await channel.fetch_message(state.message_id)
-                await message.edit(embed=build_embed(state), view=closed_view)
+                await message.edit(content=build_tracker_content(state), embed=None, view=closed_view)
             except discord.Forbidden:
                 channel_forbidden = True
                 log.error(
@@ -197,7 +197,7 @@ class RiskyRollView(discord.ui.View):
                 roll,
             )
 
-            await interaction.response.edit_message(embed=build_embed(state), view=self)
+            await interaction.response.edit_message(content=build_tracker_content(state), embed=None, view=self)
 
             if state.auto_close_players and len(state.rolls) >= state.auto_close_players:
                 task = app_state.auto_close_tasks.pop(self.game_id, None)
@@ -282,7 +282,7 @@ class RiskyRollView(discord.ui.View):
             closed_view.disable_all_items()
 
             try:
-                await interaction.response.edit_message(embed=build_embed(state), view=closed_view)
+                await interaction.response.edit_message(content=build_tracker_content(state), embed=None, view=closed_view)
             except discord.HTTPException:
                 log.exception("Failed to close round in #%s.", getattr(interaction.channel, "name", state.channel_id))
                 await interaction.response.send_message(
@@ -504,7 +504,7 @@ async def disable_round_message(
     view.disable_all_items()
 
     try:
-        await message.edit(embed=build_embed(state), view=view)
+        await message.edit(content=build_tracker_content(state), embed=None, view=view)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         return
 
