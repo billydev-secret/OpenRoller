@@ -43,59 +43,15 @@ def build_pending_question_summary(state: PendingQuestionState, question_text: s
     return f"<@{state.winner_id}> rolled 69 and asked:\n{question_text}"
 
 
-def build_tracker_content(state: RiskyRollState) -> str:
-    lines = []
-
-    # First line — status (shown in iOS push notification preview)
+def build_embed(state: RiskyRollState) -> discord.Embed:
+    embed = discord.Embed(title="Risky Rolls", color=discord.Color.gold())
     if state.is_open:
         if state.reroll_user_ids:
-            lines.append("**Risky Rolls** — Tie! Tied players must reroll.")
+            embed.description = "Tie for highest roll. Tied players must reroll."
         else:
-            lines.append("**Risky Rolls** — Press **Roll** to join this round.")
-    elif state.highest_user:
-        high_mention = f"<@{state.highest_user}>"
-        if state.lowest_user is None:
-            lines.append(f"**Round closed** — 69 rolled! {high_mention} wins and asks the room.")
-        else:
-            lines.append(f"**Round closed** — {high_mention} asks <@{state.lowest_user}>")
+            embed.description = "Press **Roll** to join this round."
     else:
-        lines.append("**Round closed.**")
-
-    if not state.rolls:
-        lines.append("Rolls (0): No rolls yet.")
-        if state.reroll_user_ids:
-            reroll_text = f"Tied: {state.reroll_mentions()}"
-            pending_mentions = state.pending_reroll_mentions()
-            if pending_mentions:
-                reroll_text += f" — Waiting on: {pending_mentions}"
-            lines.append(f"Reroll: {reroll_text}")
-    else:
-        sorted_rolls = sorted(state.rolls.items(), key=lambda item: item[1], reverse=True)
-        lines.append(f"Rolls ({len(state.rolls)}):")
-        lines.extend(f"**{roll}** — <@{user_id}>" for user_id, roll in sorted_rolls)
-
-        if state.reroll_user_ids:
-            reroll_text = f"Tied: {state.reroll_mentions()}"
-            pending_mentions = state.pending_reroll_mentions()
-            if pending_mentions:
-                reroll_text += f" — Waiting on: {pending_mentions}"
-            else:
-                reroll_text += " — All rerolls in. Close the round again."
-            lines.append(f"Reroll: {reroll_text}")
-
-        if not state.is_open and state.highest_user:
-            high_mention = f"<@{state.highest_user}>"
-            if state.lowest_user is None:
-                result = f"69 rolled. {high_mention} wins and asks the room a question."
-            else:
-                result = f"{high_mention} asks — <@{state.lowest_user}> answers"
-                lowest_rolloff_note = format_lowest_rolloff_note(
-                    state.lowest_tie_user_ids,
-                    state.lowest_user,
-                )
-                if lowest_rolloff_note:
-                    result += f"\n{lowest_rolloff_note}"
-            lines.append(f"Result: {result}")
+        embed.description = "Round closed."
 
     if state.is_open and (state.auto_close_players or state.auto_close_minutes):
         parts = []
@@ -103,9 +59,46 @@ def build_tracker_content(state: RiskyRollState) -> str:
             parts.append(f"at {state.auto_close_players} players")
         if state.auto_close_minutes:
             parts.append(f"after {state.auto_close_minutes} minute{'s' if state.auto_close_minutes != 1 else ''}")
-        lines.append(f"-# Auto-closes {' or '.join(parts)}")
+        embed.set_footer(text=f"Auto-closes {' or '.join(parts)}")
 
-    return "\n".join(lines)
+    if not state.rolls:
+        embed.add_field(name="Rolls (0)", value="No rolls yet.", inline=False)
+        if state.reroll_user_ids:
+            reroll_text = f"Tied users: {state.reroll_mentions()}"
+            pending_mentions = state.pending_reroll_mentions()
+            if pending_mentions:
+                reroll_text += f"\nWaiting on: {pending_mentions}"
+            embed.add_field(name="Reroll", value=reroll_text, inline=False)
+        return embed
+
+    sorted_rolls = sorted(state.rolls.items(), key=lambda item: item[1], reverse=True)
+    lines = [f"**{roll}** - <@{user_id}>" for user_id, roll in sorted_rolls]
+    embed.add_field(name=f"Rolls ({len(state.rolls)})", value="\n".join(lines), inline=False)
+
+    if state.reroll_user_ids:
+        reroll_text = f"Tied users: {state.reroll_mentions()}"
+        pending_mentions = state.pending_reroll_mentions()
+        if pending_mentions:
+            reroll_text += f"\nWaiting on: {pending_mentions}"
+        else:
+            reroll_text += "\nAll rerolls are in. Close the round again."
+        embed.add_field(name="Reroll", value=reroll_text, inline=False)
+
+    if not state.is_open and state.highest_user:
+        high_mention = f"<@{state.highest_user}>"
+        if state.lowest_user is None:
+            result = f"69 rolled.\n{high_mention} wins and asks the room a question."
+        else:
+            result = f"{high_mention} asks\n<@{state.lowest_user}> answers"
+            lowest_rolloff_note = format_lowest_rolloff_note(
+                state.lowest_tie_user_ids,
+                state.lowest_user,
+            )
+            if lowest_rolloff_note:
+                result += f"\n{lowest_rolloff_note}"
+        embed.add_field(name="Result", value=result, inline=False)
+
+    return embed
 
 
 def build_rolloff_embed(
@@ -160,6 +153,6 @@ async def post_rolloff_embed(
                 embed=build_rolloff_embed(tied_user_ids, rolloff_rounds, winner_id, title)
             )
     except discord.Forbidden:
-        log.exception("Missing access posting rolloff in #%s.", getattr(channel, "name", channel_id))
+        log.exception("Missing access posting rolloff embed in #%s.", getattr(channel, "name", channel_id))
     except (AttributeError, discord.HTTPException):
-        log.exception("Failed to post rolloff in #%s.", getattr(channel, "name", channel_id))
+        log.exception("Failed to post rolloff embed in #%s.", getattr(channel, "name", channel_id))

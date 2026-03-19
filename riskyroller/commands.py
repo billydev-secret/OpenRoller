@@ -5,7 +5,7 @@ import discord
 from discord import app_commands
 
 from . import state as app_state
-from .formatters import build_tracker_content
+from .formatters import build_embed
 from .models import RiskyRollState
 from .store import MAX_GAMES_PER_CHANNEL
 from .views import RiskyRollView, SixtyNineQuestionView, auto_close_round, disable_pending_question_message, disable_round_message
@@ -41,6 +41,7 @@ def setup(bot: discord.Client) -> None:
             name for allowed, name in [
                 (perms.send_messages, "Send Messages"),
                 (perms.read_message_history, "Read Message History"),
+                (perms.embed_links, "Embed Links"),
             ]
             if not allowed
         ]
@@ -76,19 +77,18 @@ def setup(bot: discord.Client) -> None:
             await app_state.store.save_round(state)
 
             role_id = app_state.ping_roles.get(interaction.guild.id)
-            tracker_content = build_tracker_content(state)
+            content = None
             allowed_mentions = discord.AllowedMentions.none()
 
             if role_id:
-                content = f"<@&{role_id}> A new Risky Rolls round has begun!\n{tracker_content}"
+                content = f"# <@&{role_id}> A new Risky Rolls round has begun!"
                 allowed_mentions = discord.AllowedMentions(roles=True)
-            else:
-                content = tracker_content
 
             view = RiskyRollView(state.game_id)
             try:
                 await interaction.response.send_message(
                     content=content,
+                    embed=build_embed(state),
                     view=view,
                     allowed_mentions=allowed_mentions,
                 )
@@ -123,7 +123,7 @@ def setup(bot: discord.Client) -> None:
                         try:
                             await message.edit(
                                 content="Risky Rolls could not finish setup. Start a new round.",
-                                embed=None,
+                                embed=build_embed(state),
                                 view=failed_view,
                                 allowed_mentions=discord.AllowedMentions.none(),
                             )
