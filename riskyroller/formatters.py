@@ -15,7 +15,7 @@ def format_lowest_rolloff_note(tied_user_ids: set[int], selected_user_id: int | 
     if selected_user_id is None or len(tied_user_ids) < 2:
         return ""
     tied_mentions = ", ".join(f"<@{user_id}>" for user_id in sorted(tied_user_ids))
-    return f"Lowest tie auto-rolloff: {tied_mentions} -> <@{selected_user_id}>."
+    return f"{tied_mentions} -> <@{selected_user_id}>."
 
 
 def build_pending_prompt_content(state: PendingQuestionState) -> str:

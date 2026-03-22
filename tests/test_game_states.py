@@ -271,7 +271,7 @@ class GameStatePresentationTests(unittest.TestCase):
         self.assertEqual("Round closed.", embed.description)
         self.assertEqual("Result", embed.fields[1].name)
         self.assertIn("<@44> asks\n<@55> answers", embed.fields[1].value)
-        self.assertIn("Lowest tie auto-rolloff: <@55>, <@66> -> <@55>.", embed.fields[1].value)
+        self.assertIn("<@55>, <@66> -> <@55>.", embed.fields[1].value)
 
     def test_build_embed_for_closed_sixtynine_result(self) -> None:
         state = RiskyRollState(
@@ -320,7 +320,7 @@ class GameStatePresentationTests(unittest.TestCase):
         content = build_pending_prompt_content(state)
 
         self.assertIn("<@10> won the round.", content)
-        self.assertIn("Lowest tie auto-rolloff: <@20>, <@30> -> <@20>.", content)
+        self.assertIn("<@20>, <@30> -> <@20>.", content)
         self.assertIn("Click **Ask Question** to send your question to <@20>.", content)
 
     def test_build_pending_prompt_content_room(self) -> None:
