@@ -25,8 +25,8 @@ def setup(bot: discord.Client) -> None:
     )
     async def risky_start(
         interaction: discord.Interaction,
-        auto_close_players: int | None = None,
-        auto_close_minutes: int | None = None,
+        auto_close_players: int | None = 25,
+        auto_close_minutes: int | None = 120,
     ):
         if interaction.guild is None or interaction.channel is None:
             await interaction.response.send_message(
