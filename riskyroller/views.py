@@ -220,7 +220,8 @@ class RiskyRollView(discord.ui.View):
                 await interaction.response.send_message("No active game.", ephemeral=True)
                 return
 
-            if interaction.user.id != state.opener_id:
+            is_admin = isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.administrator
+            if interaction.user.id != state.opener_id and not is_admin:
                 await interaction.response.send_message(
                     "Only the round opener can close this round.",
                     ephemeral=True,
