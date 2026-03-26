@@ -18,3 +18,4 @@ def get_bool_env(name: str, default: bool = False) -> bool:
 
 DEBUG: bool = get_bool_env("DEBUG", default=False)
 SYNC_COMMANDS_ON_STARTUP: bool = get_bool_env("SYNC_COMMANDS_ON_STARTUP", default=True)
+DEFAULT_MIN_GAME_SECONDS: int = int(os.getenv("DEFAULT_MIN_GAME_SECONDS", "1800"))

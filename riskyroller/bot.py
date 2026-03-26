@@ -7,7 +7,7 @@ from discord import app_commands
 
 from . import commands
 from . import state as app_state
-from .config import DEBUG, DEBUG_GUILD_ID, SYNC_COMMANDS_ON_STARTUP
+from .config import DEBUG, DEBUG_GUILD_ID, DEFAULT_MIN_GAME_SECONDS, SYNC_COMMANDS_ON_STARTUP
 from .views import RiskyRollView, SixtyNineQuestionView, auto_close_round
 
 log = logging.getLogger(__name__)
@@ -34,14 +34,24 @@ class Bot(discord.Client):
                 self.add_view(RiskyRollView(state.game_id), message_id=state.message_id)
 
                 if state.auto_close_players and len(state.rolls) >= state.auto_close_players:
-                    # Player threshold was already met before restart; close immediately.
-                    task = asyncio.create_task(auto_close_round(self, state.game_id))
+                    # Player threshold was already met before restart; close after minimum game time.
+                    elapsed = time.time() - state.created_at
+                    min_seconds = app_state.min_game_seconds.get(state.guild_id, DEFAULT_MIN_GAME_SECONDS)
+                    remaining = max(0.0, min_seconds - elapsed)
+
+                    async def _player_threshold_close(game_id: str = state.game_id, delay: float = remaining) -> None:
+                        if delay > 0:
+                            await asyncio.sleep(delay)
+                        await auto_close_round(self, game_id)
+
+                    task = asyncio.create_task(_player_threshold_close())
                     app_state.auto_close_tasks[state.game_id] = task
                     log.info(
-                        "Restored auto-close for game %s: player threshold already met (%d/%d).",
+                        "Restored auto-close for game %s: player threshold already met (%d/%d), closing in %.0fs.",
                         state.game_id,
                         len(state.rolls),
                         state.auto_close_players,
+                        remaining,
                     )
                 elif state.auto_close_minutes:
                     elapsed = time.time() - state.created_at

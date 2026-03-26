@@ -7,6 +7,7 @@ import time
 import discord
 
 from . import state as app_state
+from .config import DEFAULT_MIN_GAME_SECONDS
 from .formatters import (
     build_embed,
     build_pending_prompt_content,
@@ -203,9 +204,18 @@ class RiskyRollView(discord.ui.View):
                 task = app_state.auto_close_tasks.pop(self.game_id, None)
                 if task:
                     task.cancel()
-                close_task = asyncio.create_task(
-                    auto_close_round(interaction.client, self.game_id)
-                )
+                elapsed = time.time() - state.created_at
+                min_seconds = app_state.min_game_seconds.get(state.guild_id, DEFAULT_MIN_GAME_SECONDS)
+                delay = max(0.0, min_seconds - elapsed)
+                _client = interaction.client
+                _game_id = self.game_id
+
+                async def _deferred_close(client=_client, game_id=_game_id, d=delay) -> None:
+                    if d > 0:
+                        await asyncio.sleep(d)
+                    await auto_close_round(client, game_id)
+
+                close_task = asyncio.create_task(_deferred_close())
                 app_state.auto_close_tasks[self.game_id] = close_task
 
     @discord.ui.button(
