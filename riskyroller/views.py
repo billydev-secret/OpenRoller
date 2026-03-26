@@ -205,7 +205,7 @@ class RiskyRollView(discord.ui.View):
                 if task:
                     task.cancel()
                 elapsed = time.time() - state.created_at
-                min_seconds = app_state.min_game_seconds.get(state.guild_id, DEFAULT_MIN_GAME_SECONDS)
+                min_seconds = 0 if state.skip_min_game_time else app_state.min_game_seconds.get(state.guild_id, DEFAULT_MIN_GAME_SECONDS)
                 delay = max(0.0, min_seconds - elapsed)
                 _client = interaction.client
                 _game_id = self.game_id

@@ -36,7 +36,7 @@ class Bot(discord.Client):
                 if state.auto_close_players and len(state.rolls) >= state.auto_close_players:
                     # Player threshold was already met before restart; close after minimum game time.
                     elapsed = time.time() - state.created_at
-                    min_seconds = app_state.min_game_seconds.get(state.guild_id, DEFAULT_MIN_GAME_SECONDS)
+                    min_seconds = 0 if state.skip_min_game_time else app_state.min_game_seconds.get(state.guild_id, DEFAULT_MIN_GAME_SECONDS)
                     remaining = max(0.0, min_seconds - elapsed)
 
                     async def _player_threshold_close(game_id: str = state.game_id, delay: float = remaining) -> None:

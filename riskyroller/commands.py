@@ -13,6 +13,120 @@ from .views import RiskyRollView, SixtyNineQuestionView, auto_close_round, disab
 log = logging.getLogger(__name__)
 
 
+async def _start_game(
+    interaction: discord.Interaction,
+    auto_close_players: int | None,
+    auto_close_minutes: int | None,
+    ping: bool,
+    skip_min_game_time: bool,
+) -> None:
+    """Shared implementation for risky_start and risky_start_no_ping."""
+    if interaction.guild is None or interaction.channel is None:
+        await interaction.response.send_message(
+            "This command can only be used in a server channel.",
+            ephemeral=True,
+        )
+        return
+
+    me = interaction.guild.me
+    perms = interaction.channel.permissions_for(me)
+    missing = [
+        name for allowed, name in [
+            (perms.send_messages, "Send Messages"),
+            (perms.read_message_history, "Read Message History"),
+            (perms.embed_links, "Embed Links"),
+        ]
+        if not allowed
+    ]
+    if missing:
+        await interaction.response.send_message(
+            f"I'm missing permissions in this channel: {', '.join(missing)}. "
+            "Please fix my permissions before starting a round.",
+            ephemeral=True,
+        )
+        return
+
+    async with app_state.get_channel_lock(interaction.channel.id):
+        active_in_channel = sum(
+            1 for s in app_state.active_games.values()
+            if s.channel_id == interaction.channel.id
+        )
+        if active_in_channel >= MAX_GAMES_PER_CHANNEL:
+            await interaction.response.send_message(
+                f"This channel already has {MAX_GAMES_PER_CHANNEL} active games. "
+                "Close one before starting another.",
+                ephemeral=True,
+            )
+            return
+
+        state = RiskyRollState(
+            channel_id=interaction.channel.id,
+            guild_id=interaction.guild.id,
+            opener_id=interaction.user.id,
+            auto_close_players=auto_close_players if auto_close_players and auto_close_players >= 2 else None,
+            auto_close_minutes=auto_close_minutes if auto_close_minutes and auto_close_minutes > 0 else None,
+            skip_min_game_time=skip_min_game_time,
+        )
+        app_state.active_games[state.game_id] = state
+        await app_state.store.save_round(state)
+
+        content = None
+        allowed_mentions = discord.AllowedMentions.none()
+
+        if ping:
+            role_id = app_state.ping_roles.get(interaction.guild.id)
+            if role_id:
+                content = f"# <@&{role_id}> A new Risky Rolls round has begun!"
+                allowed_mentions = discord.AllowedMentions(roles=True)
+
+        view = RiskyRollView(state.game_id)
+        try:
+            await interaction.response.send_message(
+                content=content,
+                embed=build_embed(state),
+                view=view,
+                allowed_mentions=allowed_mentions,
+            )
+            message = await interaction.original_response()
+            state.message_id = message.id
+            await app_state.store.save_round(state)
+
+            if auto_close_minutes and auto_close_minutes > 0:
+                _client = interaction.client
+                _game_id = state.game_id
+                _minutes = auto_close_minutes
+
+                async def _timed_close() -> None:
+                    await asyncio.sleep(_minutes * 60)
+                    await auto_close_round(_client, _game_id)
+
+                task = asyncio.create_task(_timed_close())
+                app_state.auto_close_tasks[state.game_id] = task
+        except Exception:
+            app_state.active_games.pop(state.game_id, None)
+            await app_state.store.delete_round(state.game_id)
+            state.is_open = False
+
+            if interaction.response.is_done():
+                try:
+                    message = await interaction.original_response()
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+                else:
+                    failed_view = RiskyRollView(state.game_id)
+                    failed_view.disable_all_items()
+                    try:
+                        await message.edit(
+                            content="Risky Rolls could not finish setup. Start a new round.",
+                            embed=build_embed(state),
+                            view=failed_view,
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        pass
+            raise
+
+
 def setup(bot: discord.Client) -> None:
     @bot.tree.command(
         name="risky_start",
@@ -28,108 +142,35 @@ def setup(bot: discord.Client) -> None:
         auto_close_players: int | None = 25,
         auto_close_minutes: int | None = 120,
     ):
-        if interaction.guild is None or interaction.channel is None:
-            await interaction.response.send_message(
-                "This command can only be used in a server channel.",
-                ephemeral=True,
-            )
-            return
+        await _start_game(
+            interaction,
+            auto_close_players=auto_close_players,
+            auto_close_minutes=auto_close_minutes,
+            ping=True,
+            skip_min_game_time=False,
+        )
 
-        me = interaction.guild.me
-        perms = interaction.channel.permissions_for(me)
-        missing = [
-            name for allowed, name in [
-                (perms.send_messages, "Send Messages"),
-                (perms.read_message_history, "Read Message History"),
-                (perms.embed_links, "Embed Links"),
-            ]
-            if not allowed
-        ]
-        if missing:
-            await interaction.response.send_message(
-                f"I'm missing permissions in this channel: {', '.join(missing)}. "
-                "Please fix my permissions before starting a round.",
-                ephemeral=True,
-            )
-            return
-
-        async with app_state.get_channel_lock(interaction.channel.id):
-            active_in_channel = sum(
-                1 for s in app_state.active_games.values()
-                if s.channel_id == interaction.channel.id
-            )
-            if active_in_channel >= MAX_GAMES_PER_CHANNEL:
-                await interaction.response.send_message(
-                    f"This channel already has {MAX_GAMES_PER_CHANNEL} active games. "
-                    "Close one before starting another.",
-                    ephemeral=True,
-                )
-                return
-
-            state = RiskyRollState(
-                channel_id=interaction.channel.id,
-                guild_id=interaction.guild.id,
-                opener_id=interaction.user.id,
-                auto_close_players=auto_close_players if auto_close_players and auto_close_players >= 2 else None,
-                auto_close_minutes=auto_close_minutes if auto_close_minutes and auto_close_minutes > 0 else None,
-            )
-            app_state.active_games[state.game_id] = state
-            await app_state.store.save_round(state)
-
-            role_id = app_state.ping_roles.get(interaction.guild.id)
-            content = None
-            allowed_mentions = discord.AllowedMentions.none()
-
-            if role_id:
-                content = f"# <@&{role_id}> A new Risky Rolls round has begun!"
-                allowed_mentions = discord.AllowedMentions(roles=True)
-
-            view = RiskyRollView(state.game_id)
-            try:
-                await interaction.response.send_message(
-                    content=content,
-                    embed=build_embed(state),
-                    view=view,
-                    allowed_mentions=allowed_mentions,
-                )
-                message = await interaction.original_response()
-                state.message_id = message.id
-                await app_state.store.save_round(state)
-
-                if auto_close_minutes and auto_close_minutes > 0:
-                    _client = interaction.client
-                    _game_id = state.game_id
-                    _minutes = auto_close_minutes
-
-                    async def _timed_close() -> None:
-                        await asyncio.sleep(_minutes * 60)
-                        await auto_close_round(_client, _game_id)
-
-                    task = asyncio.create_task(_timed_close())
-                    app_state.auto_close_tasks[state.game_id] = task
-            except Exception:
-                app_state.active_games.pop(state.game_id, None)
-                await app_state.store.delete_round(state.game_id)
-                state.is_open = False
-
-                if interaction.response.is_done():
-                    try:
-                        message = await interaction.original_response()
-                    except (discord.NotFound, discord.HTTPException):
-                        pass
-                    else:
-                        failed_view = RiskyRollView(state.game_id)
-                        failed_view.disable_all_items()
-                        try:
-                            await message.edit(
-                                content="Risky Rolls could not finish setup. Start a new round.",
-                                embed=build_embed(state),
-                                view=failed_view,
-                                allowed_mentions=discord.AllowedMentions.none(),
-                            )
-                        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                            pass
-                raise
+    @bot.tree.command(
+        name="risky_start_no_ping",
+        description="Open a new Risky Rolls round without pinging and without a minimum game time",
+    )
+    @app_commands.guild_only()
+    @app_commands.describe(
+        auto_close_players="Auto-close when this many players have rolled",
+        auto_close_minutes="Auto-close after this many minutes",
+    )
+    async def risky_start_no_ping(
+        interaction: discord.Interaction,
+        auto_close_players: int | None = 25,
+        auto_close_minutes: int | None = 120,
+    ):
+        await _start_game(
+            interaction,
+            auto_close_players=auto_close_players,
+            auto_close_minutes=auto_close_minutes,
+            ping=False,
+            skip_min_game_time=True,
+        )
 
     @bot.tree.command(
         name="risky_set_ping",

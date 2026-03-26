@@ -45,6 +45,7 @@ class RiskyRollState:
     auto_close_players: int | None = None
     auto_close_minutes: int | None = None
     created_at: float = field(default_factory=time.time)
+    skip_min_game_time: bool = False
 
     def add_roll(self, user_id: int, value: int) -> None:
         """

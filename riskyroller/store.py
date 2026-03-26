@@ -42,6 +42,11 @@ class StateStore:
                     conn.execute("DROP TABLE IF EXISTS active_rounds")
                     conn.execute("DROP TABLE IF EXISTS pending_questions")
 
+            if "active_rounds" in existing_tables:
+                ar_columns = {row["name"] for row in conn.execute("PRAGMA table_info(active_rounds)").fetchall()}
+                if "skip_min_game_time" not in ar_columns:
+                    conn.execute("ALTER TABLE active_rounds ADD COLUMN skip_min_game_time INTEGER NOT NULL DEFAULT 0")
+
             if "guild_settings" in existing_tables:
                 gs_columns = {row["name"] for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
                 if "min_game_seconds" not in gs_columns:
@@ -67,7 +72,8 @@ class StateStore:
                     reroll_user_ids TEXT,
                     auto_close_players INTEGER,
                     auto_close_minutes INTEGER,
-                    created_at REAL
+                    created_at REAL,
+                    skip_min_game_time INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS round_rolls (
@@ -158,9 +164,10 @@ class StateStore:
                     reroll_user_ids,
                     auto_close_players,
                     auto_close_minutes,
-                    created_at
+                    created_at,
+                    skip_min_game_time
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(game_id) DO UPDATE SET
                     channel_id = excluded.channel_id,
                     guild_id = excluded.guild_id,
@@ -172,7 +179,8 @@ class StateStore:
                     reroll_user_ids = excluded.reroll_user_ids,
                     auto_close_players = excluded.auto_close_players,
                     auto_close_minutes = excluded.auto_close_minutes,
-                    created_at = excluded.created_at
+                    created_at = excluded.created_at,
+                    skip_min_game_time = excluded.skip_min_game_time
                 """,
                 (
                     state.game_id,
@@ -187,6 +195,7 @@ class StateStore:
                     state.auto_close_players,
                     state.auto_close_minutes,
                     state.created_at,
+                    int(state.skip_min_game_time),
                 ),
             )
 
@@ -273,7 +282,8 @@ class StateStore:
                     reroll_user_ids,
                     auto_close_players,
                     auto_close_minutes,
-                    created_at
+                    created_at,
+                    skip_min_game_time
                 FROM active_rounds
                 WHERE is_open = 1
                 """
@@ -293,6 +303,7 @@ class StateStore:
                     auto_close_players=int(row["auto_close_players"]) if row["auto_close_players"] is not None else None,
                     auto_close_minutes=int(row["auto_close_minutes"]) if row["auto_close_minutes"] is not None else None,
                     created_at=float(row["created_at"]) if row["created_at"] is not None else time.time(),
+                    skip_min_game_time=bool(row["skip_min_game_time"]),
                 )
                 for row in round_rows
             }
