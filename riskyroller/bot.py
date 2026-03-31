@@ -96,6 +96,23 @@ class Bot(discord.Client):
         else:
             log.info("Skipping global command sync on startup.")
 
+    async def on_message(self, message: discord.Message) -> None:
+        if message.author.bot or message.reference is None:
+            return
+        ref_id = message.reference.message_id
+        if ref_id is None:
+            return
+        asker_id = app_state.question_messages.get(ref_id)
+        if asker_id is None or message.author.id == asker_id:
+            return
+        try:
+            await message.channel.send(
+                f"<@{asker_id}> **{message.author.display_name}** replied to your question!",
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
+        except discord.HTTPException:
+            log.exception("Failed to send question reply ping in #%s.", message.channel)
+
     async def on_ready(self) -> None:
         log.info("Bot ready in %s guild(s).", len(self.guilds))
 

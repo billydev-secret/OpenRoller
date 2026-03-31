@@ -108,8 +108,9 @@ def build_rolloff_embed(
     title: str = "Tie Rolloff",
 ) -> discord.Embed:
     embed = discord.Embed(title=title, color=discord.Color.orange())
+    roll_label = "Lowest roll tied" if "lowest" in title.lower() else "Highest roll tied"
     embed.description = (
-        "Highest roll tied, so an automatic rolloff was run.\n"
+        f"{roll_label}, so an automatic rolloff was run.\n"
         f"Initial tied players: {', '.join(f'<@{user_id}>' for user_id in sorted(set(tied_user_ids)))}"
     )
 

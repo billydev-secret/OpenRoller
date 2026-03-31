@@ -424,11 +424,13 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
             await interaction.response.defer(ephemeral=True)
 
             try:
-                await interaction.followup.send(
+                question_msg = await interaction.followup.send(
                     content=f"{prefix}<@{state.winner_id}> asks:\n{question_text}",
                     allowed_mentions=discord.AllowedMentions(users=True),
                     ephemeral=False,
+                    wait=True,
                 )
+                app_state.question_messages[question_msg.id] = state.winner_id
             except discord.HTTPException:
                 log.exception("Failed to deliver winner question for game %s.", self.game_id)
                 await interaction.followup.send(
