@@ -139,7 +139,7 @@ class RiskyRollState:
                 min_roll = min(self.rolls[user_id] for user_id in remaining_user_ids)
                 lowest_tied = [u for u in remaining_user_ids if self.rolls[u] == min_roll]
                 if len(lowest_tied) > 1:
-                    lowest_id, lowest_rolloff_rounds = run_tie_rolloff(lowest_tied)
+                    lowest_id, lowest_rolloff_rounds = run_tie_rolloff(lowest_tied, pick_lowest=True)
                     self.lowest_tie_user_ids = set(lowest_tied)
                     lowest_rolloff_user_ids = lowest_tied
                 else:
@@ -164,7 +164,7 @@ class RiskyRollState:
         lowest_users = [user_id for user_id, roll in self.rolls.items() if roll == min_value]
         lowest_rolloff_rounds: list[dict[int, int]] | None = None
         if len(lowest_users) > 1:
-            lowest_id, lowest_rolloff_rounds = run_tie_rolloff(lowest_users)
+            lowest_id, lowest_rolloff_rounds = run_tie_rolloff(lowest_users, pick_lowest=True)
             self.lowest_tie_user_ids = set(lowest_users)
             log.info("Game %s: Lowest tie resolved via rolloff. Selected: %s", self.game_id, lowest_id)
         else:

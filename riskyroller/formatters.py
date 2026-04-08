@@ -114,12 +114,14 @@ def build_rolloff_embed(
         f"Initial tied players: {', '.join(f'<@{user_id}>' for user_id in sorted(set(tied_user_ids)))}"
     )
 
+    pick_lowest = "lowest" in title.lower()
     for index, round_rolls in enumerate(rounds, start=1):
-        sorted_rolls = sorted(round_rolls.items(), key=lambda item: item[1], reverse=True)
+        sorted_rolls = sorted(round_rolls.items(), key=lambda item: item[1], reverse=not pick_lowest)
         lines = [f"**{roll}** - <@{user_id}>" for user_id, roll in sorted_rolls]
         embed.add_field(name=f"Rolloff Round {index}", value="\n".join(lines), inline=False)
 
-    embed.add_field(name="Rolloff Winner", value=f"<@{winner_id}>", inline=False)
+    winner_label = "Selected Lowest" if pick_lowest else "Rolloff Winner"
+    embed.add_field(name=winner_label, value=f"<@{winner_id}>", inline=False)
     return embed
 
 

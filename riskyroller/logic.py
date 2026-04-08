@@ -13,15 +13,17 @@ def deserialize_user_ids(raw: str | None) -> set[int]:
     return {int(part) for part in raw.split(",") if part}
 
 
-def run_tie_rolloff(tied_user_ids: list[int]) -> tuple[int, list[dict[int, int]]]:
+def run_tie_rolloff(
+    tied_user_ids: list[int], pick_lowest: bool = False
+) -> tuple[int, list[dict[int, int]]]:
     contenders = sorted(set(tied_user_ids))
     rounds: list[dict[int, int]] = []
 
     while True:
         round_rolls = {user_id: random.randint(1, 100) for user_id in contenders}
         rounds.append(round_rolls)
-        max_value = max(round_rolls.values())
-        winners = sorted(user_id for user_id, roll in round_rolls.items() if roll == max_value)
+        target_value = min(round_rolls.values()) if pick_lowest else max(round_rolls.values())
+        winners = sorted(user_id for user_id, roll in round_rolls.items() if roll == target_value)
         if len(winners) == 1:
             return winners[0], rounds
         contenders = winners
