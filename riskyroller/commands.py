@@ -291,6 +291,32 @@ def setup(bot: discord.Client) -> None:
                 ephemeral=True,
             )
 
+    @bot.tree.command(
+        name="invite",
+        description="Get an invite link to add Risky Rolls to your server",
+    )
+    async def invite(interaction: discord.Interaction):
+        if interaction.client.user is None:
+            await interaction.response.send_message(
+                "Bot is not ready yet. Try again in a moment.",
+                ephemeral=True,
+            )
+            return
+
+        url = discord.utils.oauth_url(
+            interaction.client.user.id,
+            permissions=discord.Permissions(
+                send_messages=True,
+                embed_links=True,
+                read_message_history=True,
+            ),
+            scopes=["bot", "applications.commands"],
+        )
+        await interaction.response.send_message(
+            f"[Click here to add Risky Rolls to your server!]({url})",
+            ephemeral=True,
+        )
+
     @bot.tree.error
     async def on_app_command_error(
         interaction: discord.Interaction,
