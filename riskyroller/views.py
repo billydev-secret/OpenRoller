@@ -67,8 +67,9 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
         channel_forbidden = False
         if state.message_id is not None and channel is not None:
             try:
-                message = await channel.fetch_message(state.message_id)
-                await message.edit(embed=build_embed(state), view=closed_view)
+                await channel.get_partial_message(state.message_id).edit(
+                    embed=build_embed(state), view=closed_view
+                )
             except discord.Forbidden:
                 channel_forbidden = True
                 log.error(
@@ -150,7 +151,7 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
                 log.exception("Auto-close: also failed to send fallback message for game %s.", game_id)
 
 
-class RiskyRollView(discord.ui.View):
+class BaseRiskyRollView(discord.ui.View):
     def __init__(self, game_id: str):
         super().__init__(timeout=None)
         self.game_id = game_id
@@ -161,13 +162,15 @@ class RiskyRollView(discord.ui.View):
                 item.disabled = True
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
-        log.exception("Unhandled error in RiskyRollView (game %s)", self.game_id, exc_info=error)
+        log.exception("Unhandled error in %s (game %s)", type(self).__name__, self.game_id, exc_info=error)
         msg = "Something went wrong. Please try again."
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
         else:
             await interaction.response.send_message(msg, ephemeral=True)
 
+
+class RiskyRollView(BaseRiskyRollView):
     @discord.ui.button(
         label="Roll",
         style=discord.ButtonStyle.primary,
@@ -414,12 +417,13 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 )
                 return
 
-            if state.prompt_kind == "direct":
-                recipient_mentions = format_user_mentions(state.participant_user_ids)
-                prefix = f"{recipient_mentions}\n" if recipient_mentions else ""
-            else:
-                recipient_mentions = format_user_mentions(state.participant_user_ids - {state.winner_id})
-                prefix = f"{recipient_mentions}\n" if recipient_mentions else ""
+            recipients = (
+                state.participant_user_ids
+                if state.prompt_kind == "direct"
+                else state.participant_user_ids - {state.winner_id}
+            )
+            recipient_mentions = format_user_mentions(recipients)
+            prefix = f"{recipient_mentions}\n" if recipient_mentions else ""
 
             await interaction.response.defer(ephemeral=True)
 
@@ -430,7 +434,8 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                     ephemeral=False,
                     wait=True,
                 )
-                app_state.question_messages[question_msg.id] = state.winner_id
+                if state.prompt_kind == "direct":
+                    app_state.question_messages[question_msg.id] = state.winner_id
             except discord.HTTPException:
                 log.exception("Failed to deliver winner question for game %s.", self.game_id)
                 await interaction.followup.send(
@@ -454,24 +459,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
             await interaction.followup.send(confirmation, ephemeral=True)
 
 
-class SixtyNineQuestionView(discord.ui.View):
-    def __init__(self, game_id: str):
-        super().__init__(timeout=None)
-        self.game_id = game_id
-
-    def disable_all_items(self) -> None:
-        for item in self.children:
-            if hasattr(item, "disabled"):
-                item.disabled = True
-
-    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
-        log.exception("Unhandled error in SixtyNineQuestionView (game %s)", self.game_id, exc_info=error)
-        msg = "Something went wrong. Please try again."
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
-
+class SixtyNineQuestionView(BaseRiskyRollView):
     @discord.ui.button(
         label="Ask Question",
         style=discord.ButtonStyle.success,
@@ -508,16 +496,11 @@ async def disable_round_message(
     if state.message_id is None or not isinstance(channel, (discord.TextChannel, discord.Thread)):
         return
 
-    try:
-        message = await channel.fetch_message(state.message_id)
-    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-        return
-
     view = RiskyRollView(state.game_id)
     view.disable_all_items()
 
     try:
-        await message.edit(embed=build_embed(state), view=view)
+        await channel.get_partial_message(state.message_id).edit(embed=build_embed(state), view=view)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         return
 
@@ -534,15 +517,12 @@ async def disable_pending_question_message(
     if channel is None:
         return
 
-    try:
-        message = await channel.fetch_message(state.prompt_message_id)
-    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-        return
-
     view = SixtyNineQuestionView(state.game_id)
     view.disable_all_items()
 
     try:
-        await message.edit(content=content, view=view, allowed_mentions=discord.AllowedMentions.none())
+        await channel.get_partial_message(state.prompt_message_id).edit(
+            content=content, view=view, allowed_mentions=discord.AllowedMentions.none()
+        )
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         return

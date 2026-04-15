@@ -34,7 +34,6 @@ class Bot(discord.Client):
                 self.add_view(RiskyRollView(state.game_id), message_id=state.message_id)
 
                 if state.auto_close_players and len(state.rolls) >= state.auto_close_players:
-                    # Player threshold was already met before restart; close after minimum game time.
                     elapsed = time.time() - state.created_at
                     min_seconds = 0 if state.skip_min_game_time else app_state.min_game_seconds.get(state.guild_id, DEFAULT_MIN_GAME_SECONDS)
                     remaining = max(0.0, min_seconds - elapsed)

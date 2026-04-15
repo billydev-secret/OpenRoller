@@ -317,32 +317,20 @@ def setup(bot: discord.Client) -> None:
             ephemeral=True,
         )
 
+    async def _send_ephemeral(interaction: discord.Interaction, message: str) -> None:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
     @bot.tree.error
     async def on_app_command_error(
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
     ) -> None:
         if isinstance(error, app_commands.MissingPermissions):
-            if interaction.response.is_done():
-                await interaction.followup.send(
-                    "You do not have permission to use that command.",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.response.send_message(
-                    "You do not have permission to use that command.",
-                    ephemeral=True,
-                )
+            await _send_ephemeral(interaction, "You do not have permission to use that command.")
             return
 
         log.exception("Unhandled app command error", exc_info=error)
-        if interaction.response.is_done():
-            await interaction.followup.send(
-                "The command failed. Check the bot logs for details.",
-                ephemeral=True,
-            )
-        else:
-            await interaction.response.send_message(
-                "The command failed. Check the bot logs for details.",
-                ephemeral=True,
-            )
+        await _send_ephemeral(interaction, "The command failed. Check the bot logs for details.")

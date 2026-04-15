@@ -10,7 +10,6 @@ log = logging.getLogger(__name__)
 
 
 class RoundResult(Enum):
-    """Enumeration of possible round resolution outcomes."""
     NOT_ENOUGH = auto()
     WAITING_FOR_REROLLS = auto()
     TIE = auto()
@@ -21,7 +20,6 @@ class RoundResult(Enum):
 
 @dataclass
 class ResolutionResult:
-    """Result of round resolution with rolloff data if applicable."""
     result_type: RoundResult
     rolloff_user_ids: list[int] = field(default_factory=list)
     rolloff_rounds: list[dict[int, int]] | None = None
@@ -48,10 +46,6 @@ class RiskyRollState:
     skip_min_game_time: bool = False
 
     def add_roll(self, user_id: int, value: int) -> None:
-        """
-        Add a roll for a user.
-        If a reroll set is active, automatically clears it when all rerolls are complete.
-        """
         self.rolls[user_id] = value
         if self.reroll_user_ids:
             completed_rerolls = {
@@ -61,20 +55,11 @@ class RiskyRollState:
                 self.reroll_user_ids.clear()
 
     def can_roll(self, user_id: int) -> bool:
-        """
-        Check if a user is allowed to roll.
-        When a reroll set is active, only users in that set can roll (and only if they haven't yet).
-        Otherwise, users can roll if they haven't rolled already.
-        """
         if self.reroll_user_ids:
             return user_id in self.reroll_user_ids and user_id not in self.rolls
         return user_id not in self.rolls
 
     def prepare_reroll(self, user_ids: list[int]) -> None:
-        """
-        Prepare for a reroll by clearing specified users' rolls and resetting state.
-        This is used when there's a tie - the tied players must reroll.
-        """
         self.reroll_user_ids = set(user_ids)
         for user_id in self.reroll_user_ids:
             self.rolls.pop(user_id, None)
@@ -90,10 +75,6 @@ class RiskyRollState:
         return ", ".join(f"<@{user_id}>" for user_id in pending_user_ids)
 
     def resolve(self) -> ResolutionResult:
-        """
-        Resolve the round outcome and update state accordingly.
-        Returns ResolutionResult with the outcome type and any rolloff data.
-        """
         self.lowest_tie_user_ids.clear()
 
         if self.reroll_user_ids:
@@ -107,7 +88,6 @@ class RiskyRollState:
         max_value = max(self.rolls.values())
         min_value = min(self.rolls.values())
 
-        # Check for 69 rolls (automatic win)
         sixtyniners = [user_id for user_id, roll in self.rolls.items() if roll == 69]
         if sixtyniners:
             if len(sixtyniners) > 1:
@@ -127,7 +107,6 @@ class RiskyRollState:
             log.info("Game %s: 69 rolled by user %s", self.game_id, sixtyniners[0])
             return ResolutionResult(result_type=RoundResult.SIXTYNINE)
 
-        # Check for tie on highest roll
         highest_users = [user_id for user_id, roll in self.rolls.items() if roll == max_value]
         if len(highest_users) > 1:
             winner_id, rolloff_rounds = run_tie_rolloff(highest_users)
@@ -160,7 +139,6 @@ class RiskyRollState:
                 lowest_rolloff_rounds=lowest_rolloff_rounds,
             )
 
-        # Standard outcome: single highest, possibly tied lowest
         lowest_users = [user_id for user_id, roll in self.rolls.items() if roll == min_value]
         lowest_rolloff_rounds: list[dict[int, int]] | None = None
         if len(lowest_users) > 1:

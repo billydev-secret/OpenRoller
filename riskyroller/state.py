@@ -7,19 +7,18 @@ from .store import StateStore
 
 store: StateStore = StateStore(DATABASE_PATH)
 
-active_games: dict[str, RiskyRollState] = {}        # game_id -> state
-pending_questions: dict[str, PendingQuestionState] = {}  # game_id -> state
-ping_roles: dict[int, int] = {}                      # guild_id -> role_id
-min_game_seconds: dict[int, int] = {}               # guild_id -> seconds
-auto_close_tasks: dict[str, asyncio.Task] = {}       # game_id -> task
-question_messages: dict[int, int] = {}               # message_id -> asker_user_id
+active_games: dict[str, RiskyRollState] = {}
+pending_questions: dict[str, PendingQuestionState] = {}
+ping_roles: dict[int, int] = {}
+min_game_seconds: dict[int, int] = {}
+auto_close_tasks: dict[str, asyncio.Task] = {}
+question_messages: dict[int, int] = {}
 
 _channel_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = weakref.WeakValueDictionary()
 _game_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
 
 def get_channel_lock(channel_id: int) -> asyncio.Lock:
-    """Per-channel lock — used for operations that span all games in a channel (start, reset)."""
     lock = _channel_locks.get(channel_id)
     if lock is None:
         lock = asyncio.Lock()
@@ -28,7 +27,6 @@ def get_channel_lock(channel_id: int) -> asyncio.Lock:
 
 
 def get_game_lock(game_id: str) -> asyncio.Lock:
-    """Per-game lock — used for roll/close operations on a specific game."""
     lock = _game_locks.get(game_id)
     if lock is None:
         lock = asyncio.Lock()
