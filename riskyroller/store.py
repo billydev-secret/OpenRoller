@@ -223,7 +223,6 @@ class StateStore:
                 ),
             )
 
-            conn.execute("DELETE FROM round_rolls WHERE game_id = ?", (state.game_id,))
             for user_id, roll in state.rolls.items():
                 conn.execute(
                     """
@@ -258,10 +257,9 @@ class StateStore:
                     lowest_tie_user_ids,
                     prompt_kind,
                     extra_questioner_id,
-                    questions_remaining,
                     questioners_asked
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(game_id) DO UPDATE SET
                     channel_id = excluded.channel_id,
                     guild_id = excluded.guild_id,
@@ -271,7 +269,6 @@ class StateStore:
                     lowest_tie_user_ids = excluded.lowest_tie_user_ids,
                     prompt_kind = excluded.prompt_kind,
                     extra_questioner_id = excluded.extra_questioner_id,
-                    questions_remaining = excluded.questions_remaining,
                     questioners_asked = excluded.questioners_asked
                 """,
                 (
@@ -284,7 +281,6 @@ class StateStore:
                     serialize_user_ids(state.lowest_tie_user_ids),
                     state.prompt_kind,
                     state.extra_questioner_id,
-                    state.questions_remaining,
                     serialize_user_ids(state.questioners_asked),
                 ),
             )
@@ -379,7 +375,6 @@ class StateStore:
                     lowest_tie_user_ids,
                     prompt_kind,
                     extra_questioner_id,
-                    questions_remaining,
                     questioners_asked
                 FROM pending_questions
                 """
@@ -400,7 +395,6 @@ class StateStore:
                 extra_questioner_id=(
                     int(row["extra_questioner_id"]) if row["extra_questioner_id"] is not None else None
                 ),
-                questions_remaining=int(row["questions_remaining"]) if row["questions_remaining"] is not None else 1,
                 questioners_asked=deserialize_user_ids(row["questioners_asked"]),
             )
             for row in rows

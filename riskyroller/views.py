@@ -136,8 +136,6 @@ def _build_main_prompt_state(game_id: str, state: RiskyRollState, resolution) ->
 def _build_one_rule_prompt_state(game_id: str, state: RiskyRollState) -> PendingQuestionState | None:
     if state.lowest_user is None or state.rolls.get(state.lowest_user) != 1:
         return None
-    questioners = [state.highest_user, state.second_highest_user]
-    questioners_count = sum(1 for q in questioners if q is not None)
     return PendingQuestionState(
         channel_id=state.channel_id,
         guild_id=state.guild_id,
@@ -145,7 +143,6 @@ def _build_one_rule_prompt_state(game_id: str, state: RiskyRollState) -> Pending
         participant_user_ids={state.lowest_user},
         game_id=f"{game_id}:1",
         extra_questioner_id=state.second_highest_user,
-        questions_remaining=questioners_count,
         prompt_kind="two_questioners",
     )
 
@@ -286,6 +283,7 @@ class RiskyRollView(BaseRiskyRollView):
         label="Roll",
         style=discord.ButtonStyle.primary,
         custom_id="riskyroller:roll",
+        emoji="🎲",
     )
     async def roll_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         async with app_state.get_game_lock(self.game_id):
@@ -336,6 +334,7 @@ class RiskyRollView(BaseRiskyRollView):
         label="Close Round",
         style=discord.ButtonStyle.danger,
         custom_id="riskyroller:close",
+        emoji="🔒",
     )
     async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         async with app_state.get_game_lock(self.game_id):
@@ -422,7 +421,7 @@ class RiskyRollView(BaseRiskyRollView):
 class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
     question = discord.ui.TextInput(
         label="Your question",
-        placeholder="Type the question you want to send.",
+        placeholder="What do you want to ask them?",
         style=discord.TextStyle.paragraph,
         max_length=300,
     )
@@ -442,11 +441,8 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 return
 
             asker_id = interaction.user.id
-            allowed = {state.winner_id}
-            if state.extra_questioner_id is not None:
-                allowed.add(state.extra_questioner_id)
 
-            if asker_id not in allowed:
+            if asker_id not in state.allowed_questioners():
                 await interaction.response.send_message(
                     "Only the eligible players can send a question.",
                     ephemeral=True,
@@ -539,7 +535,6 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                     return
 
                 state.questioners_asked.add(asker_id)
-                state.questions_remaining -= 1
 
                 if state.questions_remaining > 0:
                     await app_state.store.save_pending_question(state)
@@ -573,7 +568,6 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 await interaction.followup.send("Question sent.", ephemeral=True)
                 return
 
-            # "direct" prompt kind
             recipient_mentions = format_user_mentions(state.participant_user_ids)
             try:
                 question_msg = await interaction.followup.send(
@@ -610,6 +604,7 @@ class SixtyNineQuestionView(BaseRiskyRollView):
         label="Ask Question",
         style=discord.ButtonStyle.success,
         custom_id="riskyroller:ask_question",
+        emoji="💬",
     )
     async def ask_question_button(
         self,
@@ -625,11 +620,7 @@ class SixtyNineQuestionView(BaseRiskyRollView):
                 )
                 return
 
-            allowed = {state.winner_id}
-            if state.extra_questioner_id is not None:
-                allowed.add(state.extra_questioner_id)
-
-            if interaction.user.id not in allowed:
+            if interaction.user.id not in state.allowed_questioners():
                 await interaction.response.send_message(
                     "Only the eligible players can send a question.",
                     ephemeral=True,

@@ -15,7 +15,18 @@ def format_lowest_rolloff_note(tied_user_ids: set[int], selected_user_id: int | 
     if selected_user_id is None or len(tied_user_ids) < 2:
         return ""
     tied_mentions = ", ".join(f"<@{user_id}>" for user_id in sorted(tied_user_ids))
-    return f"{tied_mentions} -> <@{selected_user_id}>."
+    return f"{tied_mentions} → <@{selected_user_id}>"
+
+
+def _roll_prefix(user_id: int, roll: int, state: RiskyRollState) -> str:
+    if roll == 69:
+        return "🔥"
+    if not state.is_open:
+        if user_id == state.highest_user:
+            return "⭐" if roll == 100 else "🥇"
+        if user_id == state.lowest_user:
+            return "☠️" if roll == 1 else "💀"
+    return "🎲"
 
 
 def build_pending_prompt_content(state: PendingQuestionState) -> str:
@@ -26,32 +37,32 @@ def build_pending_prompt_content(state: PendingQuestionState) -> str:
             if uid is not None and uid not in state.questioners_asked
         ]
         questioner_mentions = " and ".join(f"<@{uid}>" for uid in questioners_remaining)
-        lines = [f"Someone rolled a **1**! {questioner_mentions} can each ask {target_mentions} a question."]
+        lines = [f"☠️ Someone rolled a **1**! {questioner_mentions} can each fire a question at {target_mentions}."]
         if state.questioners_asked:
             already = " and ".join(
                 f"<@{uid}>" for uid in [state.winner_id, state.extra_questioner_id]
                 if uid is not None and uid in state.questioners_asked
             )
-            lines.append(f"{already} has already asked.")
-        lines.append("Click **Ask Question** to send your question.")
+            lines.append(f"{already} already asked.")
+        lines.append("Click **Ask Question** to send yours.")
         return "\n".join(lines)
 
     if state.prompt_kind == "direct":
         selected_user_id = next(iter(sorted(state.participant_user_ids)), None)
         lowest_rolloff_note = format_lowest_rolloff_note(state.lowest_tie_user_ids, selected_user_id)
         target_mentions = format_user_mentions(state.participant_user_ids)
-        lines = [f"<@{state.winner_id}> won the round."]
+        lines = [f"🥇 <@{state.winner_id}> wins the round."]
         if lowest_rolloff_note:
             lines.append(lowest_rolloff_note)
         if len(state.participant_user_ids) > 1:
-            lines.append(f"They rolled **100**! Click **Ask Question** to send your question to {target_mentions}.")
+            lines.append(f"They rolled **100** — click **Ask Question** to send your question to {target_mentions}.")
         else:
             lines.append(f"Click **Ask Question** to send your question to {target_mentions}.")
         return "\n".join(lines)
 
     return (
-        f"<@{state.winner_id}> rolled **69** and wins.\n"
-        "Click **Ask Question** to post your question to everyone who rolled."
+        f"🔥 <@{state.winner_id}> rolled **69** — they ask the room.\n"
+        "Click **Ask Question** to post your question in a thread."
     )
 
 
@@ -59,24 +70,32 @@ def build_pending_question_summary(state: PendingQuestionState, question_text: s
     if state.prompt_kind == "two_questioners":
         uid = asker_id if asker_id is not None else state.winner_id
         target_mentions = format_user_mentions(state.participant_user_ids)
-        return f"<@{uid}> asked {target_mentions}:\n{question_text}"
+        return f"<@{uid}> asked {target_mentions}:\n> {question_text}"
 
     if state.prompt_kind == "direct":
         target_mentions = format_user_mentions(state.participant_user_ids)
-        return f"<@{state.winner_id}> asked {target_mentions}:\n{question_text}"
+        return f"<@{state.winner_id}> asked {target_mentions}:\n> {question_text}"
 
-    return f"<@{state.winner_id}> rolled 69 and asked:\n{question_text}"
+    return f"<@{state.winner_id}> rolled 69 and asked:\n> {question_text}"
 
 
 def build_embed(state: RiskyRollState) -> discord.Embed:
-    embed = discord.Embed(title="Risky Rolls", color=discord.Color.gold())
+    if state.is_open:
+        color = discord.Color(0xFF9800) if state.reroll_user_ids else discord.Color(0xDC3545)
+    elif state.highest_user is not None and state.lowest_user is None:
+        color = discord.Color(0xFFD700)
+    else:
+        color = discord.Color(0x546E7A)
+
+    embed = discord.Embed(title="🎲 Risky Rolls", color=color)
+
     if state.is_open:
         if state.reroll_user_ids:
-            embed.description = "Tie for highest roll. Tied players must reroll."
+            embed.description = "Tie for highest — the tied players must reroll."
         else:
-            embed.description = "Press **Roll** to join this round."
+            embed.description = "Highest roll wins, lowest answers. Press **Roll** to join."
     else:
-        embed.description = "Round closed."
+        embed.description = "Round over."
 
     if state.is_open and (state.auto_close_players or state.auto_close_minutes):
         parts = []
@@ -89,41 +108,44 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
     if not state.rolls:
         embed.add_field(name="Rolls (0)", value="No rolls yet.", inline=False)
         if state.reroll_user_ids:
-            reroll_text = f"Tied users: {state.reroll_mentions()}"
+            reroll_text = f"Tied: {state.reroll_mentions()}"
             pending_mentions = state.pending_reroll_mentions()
             if pending_mentions:
                 reroll_text += f"\nWaiting on: {pending_mentions}"
-            embed.add_field(name="Reroll", value=reroll_text, inline=False)
+            embed.add_field(name="⚔️ Reroll", value=reroll_text, inline=False)
         return embed
 
     sorted_rolls = sorted(state.rolls.items(), key=lambda item: item[1], reverse=True)
-    lines = [f"**{roll}** - <@{user_id}>" for user_id, roll in sorted_rolls]
+    lines = [
+        f"{_roll_prefix(user_id, roll, state)} **{roll}** — <@{user_id}>"
+        for user_id, roll in sorted_rolls
+    ]
     embed.add_field(name=f"Rolls ({len(state.rolls)})", value="\n".join(lines), inline=False)
 
     if state.reroll_user_ids:
-        reroll_text = f"Tied users: {state.reroll_mentions()}"
+        reroll_text = f"Tied: {state.reroll_mentions()}"
         pending_mentions = state.pending_reroll_mentions()
         if pending_mentions:
             reroll_text += f"\nWaiting on: {pending_mentions}"
         else:
-            reroll_text += "\nAll rerolls are in. Close the round again."
-        embed.add_field(name="Reroll", value=reroll_text, inline=False)
+            reroll_text += "\nAll rerolls in — close the round."
+        embed.add_field(name="⚔️ Reroll", value=reroll_text, inline=False)
 
     if not state.is_open and state.highest_user:
         high_mention = f"<@{state.highest_user}>"
         if state.lowest_user is None:
-            result = f"69 rolled.\n{high_mention} wins and asks the room a question in a thread."
+            result = f"**Asks:** {high_mention}\n**Answers:** the room"
         else:
             low_mention = f"<@{state.lowest_user}>"
             winner_rolled_100 = state.rolls.get(state.highest_user) == 100
             loser_rolled_1 = state.rolls.get(state.lowest_user) == 1
 
             if winner_rolled_100 and state.second_lowest_user is not None:
-                result = f"{high_mention} rolled **100** and asks\n{low_mention} and <@{state.second_lowest_user}> answer"
+                result = f"**Asks:** {high_mention} ⭐\n**Answers:** {low_mention} and <@{state.second_lowest_user}>"
             elif loser_rolled_1 and state.second_highest_user is not None:
-                result = f"{high_mention} and <@{state.second_highest_user}> each ask\n{low_mention} rolled **1** and answers"
+                result = f"**Asks:** {high_mention} and <@{state.second_highest_user}>\n**Answers:** {low_mention} ☠️"
             else:
-                result = f"{high_mention} asks\n{low_mention} answers"
+                result = f"**Asks:** {high_mention}\n**Answers:** {low_mention}"
 
             lowest_rolloff_note = format_lowest_rolloff_note(
                 state.lowest_tie_user_ids,
@@ -133,7 +155,7 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
                 result += f"\n{lowest_rolloff_note}"
 
             if winner_rolled_100 and loser_rolled_1:
-                result += "\n*(both the 100 and 1 rules apply)*"
+                result += "\n*Both the 100 and 1 rules apply.*"
 
         embed.add_field(name="Result", value=result, inline=False)
 
@@ -146,20 +168,20 @@ def build_rolloff_embed(
     winner_id: int,
     title: str = "Tie Rolloff",
 ) -> discord.Embed:
-    embed = discord.Embed(title=title, color=discord.Color.orange())
-    roll_label = "Lowest roll tied" if "lowest" in title.lower() else "Highest roll tied"
+    pick_lowest = "lowest" in title.lower()
+    embed = discord.Embed(title=f"⚔️ {title}", color=discord.Color(0xFF9800))
+    roll_label = "Lowest roll tied" if pick_lowest else "Highest roll tied"
     embed.description = (
-        f"{roll_label}, so an automatic rolloff was run.\n"
-        f"Initial tied players: {', '.join(f'<@{user_id}>' for user_id in sorted(set(tied_user_ids)))}"
+        f"{roll_label} — automatic rolloff.\n"
+        f"Tied: {', '.join(f'<@{user_id}>' for user_id in sorted(set(tied_user_ids)))}"
     )
 
-    pick_lowest = "lowest" in title.lower()
     for index, round_rolls in enumerate(rounds, start=1):
         sorted_rolls = sorted(round_rolls.items(), key=lambda item: item[1], reverse=not pick_lowest)
-        lines = [f"**{roll}** - <@{user_id}>" for user_id, roll in sorted_rolls]
-        embed.add_field(name=f"Rolloff Round {index}", value="\n".join(lines), inline=False)
+        lines = [f"🎲 **{roll}** — <@{user_id}>" for user_id, roll in sorted_rolls]
+        embed.add_field(name=f"Round {index}", value="\n".join(lines), inline=False)
 
-    winner_label = "Selected Lowest" if pick_lowest else "Rolloff Winner"
+    winner_label = "☠️ Selected Lowest" if pick_lowest else "🏆 Rolloff Winner"
     embed.add_field(name=winner_label, value=f"<@{winner_id}>", inline=False)
     return embed
 
