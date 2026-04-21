@@ -94,61 +94,172 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
             )
             return
 
-        if resolution.result_type in (RoundResult.SIXTYNINE, RoundResult.SIXTYNINE_TIE):
-            prompt_state = PendingQuestionState(
-                channel_id=channel_id,
-                guild_id=state.guild_id,
-                winner_id=state.highest_user,
-                participant_user_ids=set(state.rolls),
-                game_id=game_id,
-                prompt_kind="room",
-            )
-        else:
-            if state.lowest_user is None:
-                log.warning("Auto-close: no lowest_user for game %s.", game_id)
-                return
-            prompt_state = PendingQuestionState(
-                channel_id=channel_id,
-                guild_id=state.guild_id,
-                winner_id=state.highest_user,
-                participant_user_ids={state.lowest_user},
-                game_id=game_id,
-                lowest_tie_user_ids=set(state.lowest_tie_user_ids),
-                prompt_kind="direct",
-            )
+        await _send_question_prompts_channel(client, channel, game_id, state, resolution)
 
-        question_view = SixtyNineQuestionView(game_id)
-        prompt_message: discord.Message | None = None
 
+async def _register_prompt(
+    game_id: str,
+    prompt_state: PendingQuestionState,
+    message: discord.Message | discord.WebhookMessage,
+) -> None:
+    prompt_state.prompt_message_id = message.id
+    app_state.pending_questions[game_id] = prompt_state
+    await app_state.store.save_pending_question(prompt_state)
+
+
+def _build_main_prompt_state(game_id: str, state: RiskyRollState, resolution) -> PendingQuestionState | None:
+    if resolution.result_type in (RoundResult.SIXTYNINE, RoundResult.SIXTYNINE_TIE):
+        return PendingQuestionState(
+            channel_id=state.channel_id,
+            guild_id=state.guild_id,
+            winner_id=state.highest_user,
+            participant_user_ids=set(state.rolls),
+            game_id=game_id,
+            prompt_kind="room",
+        )
+    if state.lowest_user is None:
+        return None
+    targets = {state.lowest_user}
+    if state.second_lowest_user is not None:
+        targets.add(state.second_lowest_user)
+    return PendingQuestionState(
+        channel_id=state.channel_id,
+        guild_id=state.guild_id,
+        winner_id=state.highest_user,
+        participant_user_ids=targets,
+        game_id=game_id,
+        lowest_tie_user_ids=set(state.lowest_tie_user_ids),
+        prompt_kind="direct",
+    )
+
+
+def _build_one_rule_prompt_state(game_id: str, state: RiskyRollState) -> PendingQuestionState | None:
+    if state.lowest_user is None or state.rolls.get(state.lowest_user) != 1:
+        return None
+    questioners = [state.highest_user, state.second_highest_user]
+    questioners_count = sum(1 for q in questioners if q is not None)
+    return PendingQuestionState(
+        channel_id=state.channel_id,
+        guild_id=state.guild_id,
+        winner_id=state.highest_user,
+        participant_user_ids={state.lowest_user},
+        game_id=f"{game_id}:1",
+        extra_questioner_id=state.second_highest_user,
+        questions_remaining=questioners_count,
+        prompt_kind="two_questioners",
+    )
+
+
+async def _send_question_prompts_channel(
+    client: discord.Client,
+    channel: discord.TextChannel | discord.Thread,
+    game_id: str,
+    state: RiskyRollState,
+    resolution,
+) -> None:
+
+    main_prompt = _build_main_prompt_state(game_id, state, resolution)
+    if main_prompt is None:
+        log.warning("Auto-close: no prompt state built for game %s.", game_id)
+        return
+
+    question_view = SixtyNineQuestionView(game_id)
+    prompt_message: discord.Message | None = None
+    try:
+        prompt_message = await channel.send(
+            content=build_pending_prompt_content(main_prompt),
+            allowed_mentions=discord.AllowedMentions(users=True),
+            view=question_view,
+        )
+        await _register_prompt(game_id, main_prompt, prompt_message)
+    except discord.Forbidden:
+        log.error("Auto-close: missing access to #%s (game %s).", getattr(channel, "name", state.channel_id), game_id)
+        return
+    except Exception:
+        log.exception("Auto-close: failed to send winner prompt for game %s.", game_id)
+        app_state.pending_questions.pop(game_id, None)
+        await app_state.store.delete_pending_question(game_id)
+        if prompt_message is not None:
+            await disable_pending_question_message(client, main_prompt, "Risky Rolls could not prepare the question prompt.")
         try:
-            prompt_message = await channel.send(
-                content=build_pending_prompt_content(prompt_state),
-                allowed_mentions=discord.AllowedMentions(users=True),
-                view=question_view,
-            )
-            prompt_state.prompt_message_id = prompt_message.id
-            app_state.pending_questions[game_id] = prompt_state
-            await app_state.store.save_pending_question(prompt_state)
-        except discord.Forbidden:
-            log.error(
-                "Auto-close: bot is missing access to #%s (game %s). "
-                "Check channel permissions and that the bot can access NSFW channels.",
-                getattr(channel, "name", channel_id), game_id,
-            )
+            await channel.send("The round ended but the winner prompt could not be sent. Please start a new round.")
         except Exception:
-            log.exception("Auto-close: failed to send winner prompt for game %s.", game_id)
-            app_state.pending_questions.pop(game_id, None)
-            await app_state.store.delete_pending_question(game_id)
-            if prompt_message is not None:
-                await disable_pending_question_message(
-                    client,
-                    prompt_state,
-                    "Risky Rolls could not prepare the question prompt. Start a new round.",
-                )
-            try:
-                await channel.send("The round ended but the winner prompt could not be sent. Please start a new round.")
-            except Exception:
-                log.exception("Auto-close: also failed to send fallback message for game %s.", game_id)
+            log.exception("Auto-close: also failed to send fallback message for game %s.", game_id)
+        return
+
+    if resolution.result_type in (RoundResult.SIXTYNINE, RoundResult.SIXTYNINE_TIE):
+        return
+
+    one_rule_prompt = _build_one_rule_prompt_state(game_id, state)
+    if one_rule_prompt is None:
+        return
+
+    one_game_id = f"{game_id}:1"
+    one_view = SixtyNineQuestionView(one_game_id)
+    one_message: discord.Message | None = None
+    try:
+        one_message = await channel.send(
+            content=build_pending_prompt_content(one_rule_prompt),
+            allowed_mentions=discord.AllowedMentions(users=True),
+            view=one_view,
+        )
+        await _register_prompt(one_game_id, one_rule_prompt, one_message)
+    except Exception:
+        log.exception("Auto-close: failed to send 1-rule prompt for game %s.", game_id)
+        app_state.pending_questions.pop(one_game_id, None)
+        await app_state.store.delete_pending_question(one_game_id)
+
+
+async def _send_question_prompts_followup(
+    interaction: discord.Interaction,
+    game_id: str,
+    state: RiskyRollState,
+    resolution,
+) -> None:
+    main_prompt = _build_main_prompt_state(game_id, state, resolution)
+    if main_prompt is None:
+        log.warning("Close: no prompt state built for game %s.", game_id)
+        return
+
+    question_view = SixtyNineQuestionView(game_id)
+    prompt_message: discord.WebhookMessage | None = None
+    try:
+        prompt_message = await interaction.followup.send(
+            content=build_pending_prompt_content(main_prompt),
+            allowed_mentions=discord.AllowedMentions(users=True),
+            view=question_view,
+            wait=True,
+        )
+        await _register_prompt(game_id, main_prompt, prompt_message)
+    except Exception:
+        app_state.pending_questions.pop(game_id, None)
+        await app_state.store.delete_pending_question(game_id)
+        if prompt_message is not None:
+            await disable_pending_question_message(interaction.client, main_prompt, "Risky Rolls could not prepare the question prompt.")
+        raise
+
+    if resolution.result_type in (RoundResult.SIXTYNINE, RoundResult.SIXTYNINE_TIE):
+        return
+
+    one_rule_prompt = _build_one_rule_prompt_state(game_id, state)
+    if one_rule_prompt is None:
+        return
+
+    one_game_id = f"{game_id}:1"
+    one_view = SixtyNineQuestionView(one_game_id)
+    one_message: discord.WebhookMessage | None = None
+    try:
+        one_message = await interaction.followup.send(
+            content=build_pending_prompt_content(one_rule_prompt),
+            allowed_mentions=discord.AllowedMentions(users=True),
+            view=one_view,
+            wait=True,
+        )
+        await _register_prompt(one_game_id, one_rule_prompt, one_message)
+    except Exception:
+        log.exception("Close: failed to send 1-rule prompt for game %s.", game_id)
+        app_state.pending_questions.pop(one_game_id, None)
+        await app_state.store.delete_pending_question(one_game_id)
 
 
 class BaseRiskyRollView(discord.ui.View):
@@ -305,79 +416,7 @@ class RiskyRollView(BaseRiskyRollView):
                 )
                 return
 
-            if resolution.result_type in (RoundResult.SIXTYNINE, RoundResult.SIXTYNINE_TIE):
-                prompt_state = PendingQuestionState(
-                    channel_id=state.channel_id,
-                    guild_id=state.guild_id,
-                    winner_id=state.highest_user,
-                    participant_user_ids=set(state.rolls),
-                    game_id=self.game_id,
-                    prompt_kind="room",
-                )
-                question_view = SixtyNineQuestionView(self.game_id)
-                prompt_message: discord.WebhookMessage | None = None
-
-                try:
-                    prompt_message = await interaction.followup.send(
-                        content=build_pending_prompt_content(prompt_state),
-                        allowed_mentions=discord.AllowedMentions(users=True),
-                        view=question_view,
-                        wait=True,
-                    )
-                    prompt_state.prompt_message_id = prompt_message.id
-                    app_state.pending_questions[self.game_id] = prompt_state
-                    await app_state.store.save_pending_question(prompt_state)
-                except Exception:
-                    app_state.pending_questions.pop(self.game_id, None)
-                    await app_state.store.delete_pending_question(self.game_id)
-                    if prompt_message is not None:
-                        await disable_pending_question_message(
-                            interaction.client,
-                            prompt_state,
-                            "Risky Rolls could not prepare the 69 question prompt. Start a new round.",
-                        )
-                    raise
-                return
-
-            if state.lowest_user is None:
-                log.warning(
-                    "Round closed for game %s without a lowest_user. This should not happen.",
-                    self.game_id,
-                )
-                return
-
-            prompt_state = PendingQuestionState(
-                channel_id=state.channel_id,
-                guild_id=state.guild_id,
-                winner_id=state.highest_user,
-                participant_user_ids={state.lowest_user},
-                game_id=self.game_id,
-                lowest_tie_user_ids=set(state.lowest_tie_user_ids),
-                prompt_kind="direct",
-            )
-            question_view = SixtyNineQuestionView(self.game_id)
-            prompt_message = None
-
-            try:
-                prompt_message = await interaction.followup.send(
-                    content=build_pending_prompt_content(prompt_state),
-                    allowed_mentions=discord.AllowedMentions(users=True),
-                    view=question_view,
-                    wait=True,
-                )
-                prompt_state.prompt_message_id = prompt_message.id
-                app_state.pending_questions[self.game_id] = prompt_state
-                await app_state.store.save_pending_question(prompt_state)
-            except Exception:
-                app_state.pending_questions.pop(self.game_id, None)
-                await app_state.store.delete_pending_question(self.game_id)
-                if prompt_message is not None:
-                    await disable_pending_question_message(
-                        interaction.client,
-                        prompt_state,
-                        "Risky Rolls could not prepare the winner question prompt. Start a new round.",
-                    )
-                raise
+            await _send_question_prompts_followup(interaction, self.game_id, state, resolution)
 
 
 class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
@@ -402,9 +441,21 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 )
                 return
 
-            if interaction.user.id != state.winner_id:
+            asker_id = interaction.user.id
+            allowed = {state.winner_id}
+            if state.extra_questioner_id is not None:
+                allowed.add(state.extra_questioner_id)
+
+            if asker_id not in allowed:
                 await interaction.response.send_message(
-                    "Only the round winner can send that question.",
+                    "Only the eligible players can send a question.",
+                    ephemeral=True,
+                )
+                return
+
+            if asker_id in state.questioners_asked:
+                await interaction.response.send_message(
+                    "You already asked your question.",
                     ephemeral=True,
                 )
                 return
@@ -417,25 +468,121 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 )
                 return
 
-            recipients = (
-                state.participant_user_ids
-                if state.prompt_kind == "direct"
-                else state.participant_user_ids - {state.winner_id}
-            )
-            recipient_mentions = format_user_mentions(recipients)
-            prefix = f"{recipient_mentions}\n" if recipient_mentions else ""
-
             await interaction.response.defer(ephemeral=True)
 
+            if state.prompt_kind == "room":
+                # Create a thread from the prompt message and ping everyone who rolled.
+                channel = interaction.channel
+                thread_name = question_text[:97] + "..." if len(question_text) > 97 else question_text
+                try:
+                    if isinstance(channel, discord.TextChannel) and state.prompt_message_id is not None:
+                        partial_msg = channel.get_partial_message(state.prompt_message_id)
+                        thread = await partial_msg.create_thread(
+                            name=thread_name,
+                            auto_archive_duration=1440,
+                        )
+                    elif isinstance(channel, discord.TextChannel):
+                        thread = await channel.create_thread(
+                            name=thread_name,
+                            type=discord.ChannelType.public_thread,
+                            auto_archive_duration=1440,
+                        )
+                    else:
+                        thread = None
+                except (discord.Forbidden, discord.HTTPException):
+                    log.exception("Failed to create thread for 69 question in game %s.", self.game_id)
+                    thread = None
+
+                all_mentions = format_user_mentions(state.participant_user_ids)
+                content = f"{all_mentions}\n<@{asker_id}> asks:\n{question_text}"
+
+                try:
+                    if thread is not None:
+                        await thread.send(
+                            content=content,
+                            allowed_mentions=discord.AllowedMentions(users=True),
+                        )
+                    else:
+                        await interaction.followup.send(
+                            content=content,
+                            allowed_mentions=discord.AllowedMentions(users=True),
+                            ephemeral=False,
+                        )
+                except discord.HTTPException:
+                    log.exception("Failed to post 69 question for game %s.", self.game_id)
+                    await interaction.followup.send("I could not send the question. Please try again.", ephemeral=True)
+                    return
+
+                app_state.pending_questions.pop(self.game_id, None)
+                await app_state.store.delete_pending_question(self.game_id)
+                await disable_pending_question_message(
+                    interaction.client,
+                    state,
+                    build_pending_question_summary(state, question_text, asker_id),
+                )
+                await interaction.followup.send("Question posted in a thread.", ephemeral=True)
+                return
+
+            if state.prompt_kind == "two_questioners":
+                target_mentions = format_user_mentions(state.participant_user_ids)
+                try:
+                    question_msg = await interaction.followup.send(
+                        content=f"{target_mentions}\n<@{asker_id}> asks:\n{question_text}",
+                        allowed_mentions=discord.AllowedMentions(users=True),
+                        ephemeral=False,
+                        wait=True,
+                    )
+                    app_state.question_messages[question_msg.id] = asker_id
+                except discord.HTTPException:
+                    log.exception("Failed to deliver two-questioner question for game %s.", self.game_id)
+                    await interaction.followup.send("I could not send the question. Please try again.", ephemeral=True)
+                    return
+
+                state.questioners_asked.add(asker_id)
+                state.questions_remaining -= 1
+
+                if state.questions_remaining > 0:
+                    await app_state.store.save_pending_question(state)
+                    remaining_id = next(
+                        uid for uid in [state.winner_id, state.extra_questioner_id]
+                        if uid is not None and uid not in state.questioners_asked
+                    )
+                    channel = await get_text_channel(interaction.client, state.channel_id)
+                    if channel is not None and state.prompt_message_id is not None:
+                        try:
+                            await channel.get_partial_message(state.prompt_message_id).edit(
+                                content=build_pending_prompt_content(state),
+                                allowed_mentions=discord.AllowedMentions(users=True),
+                            )
+                        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                            pass
+                    await interaction.followup.send(
+                        f"Question sent! Waiting for <@{remaining_id}> to ask their question.",
+                        ephemeral=True,
+                        allowed_mentions=discord.AllowedMentions(users=False),
+                    )
+                    return
+
+                app_state.pending_questions.pop(self.game_id, None)
+                await app_state.store.delete_pending_question(self.game_id)
+                await disable_pending_question_message(
+                    interaction.client,
+                    state,
+                    build_pending_question_summary(state, question_text, asker_id),
+                )
+                await interaction.followup.send("Question sent.", ephemeral=True)
+                return
+
+            # "direct" prompt kind
+            recipient_mentions = format_user_mentions(state.participant_user_ids)
             try:
                 question_msg = await interaction.followup.send(
-                    content=f"{prefix}<@{state.winner_id}> asks:\n{question_text}",
+                    content=f"{recipient_mentions}\n<@{asker_id}> asks:\n{question_text}",
                     allowed_mentions=discord.AllowedMentions(users=True),
                     ephemeral=False,
                     wait=True,
                 )
-                if state.prompt_kind == "direct":
-                    app_state.question_messages[question_msg.id] = state.winner_id
+                app_state.question_messages[question_msg.id] = asker_id
             except discord.HTTPException:
                 log.exception("Failed to deliver winner question for game %s.", self.game_id)
                 await interaction.followup.send(
@@ -449,14 +596,13 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
             await disable_pending_question_message(
                 interaction.client,
                 state,
-                build_pending_question_summary(state, question_text),
+                build_pending_question_summary(state, question_text, asker_id),
             )
-            confirmation = (
-                "Question sent to the selected player."
-                if state.prompt_kind == "direct"
-                else "Question sent to everyone who rolled."
+            target_count = len(state.participant_user_ids)
+            await interaction.followup.send(
+                "Question sent to the selected player." if target_count == 1 else "Question sent to both players.",
+                ephemeral=True,
             )
-            await interaction.followup.send(confirmation, ephemeral=True)
 
 
 class SixtyNineQuestionView(BaseRiskyRollView):
@@ -479,9 +625,20 @@ class SixtyNineQuestionView(BaseRiskyRollView):
                 )
                 return
 
-            if interaction.user.id != state.winner_id:
+            allowed = {state.winner_id}
+            if state.extra_questioner_id is not None:
+                allowed.add(state.extra_questioner_id)
+
+            if interaction.user.id not in allowed:
                 await interaction.response.send_message(
-                    "Only the round winner can send that question.",
+                    "Only the eligible players can send a question.",
+                    ephemeral=True,
+                )
+                return
+
+            if interaction.user.id in state.questioners_asked:
+                await interaction.response.send_message(
+                    "You already asked your question.",
                     ephemeral=True,
                 )
                 return

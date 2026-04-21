@@ -46,6 +46,19 @@ class StateStore:
                 ar_columns = {row["name"] for row in conn.execute("PRAGMA table_info(active_rounds)").fetchall()}
                 if "skip_min_game_time" not in ar_columns:
                     conn.execute("ALTER TABLE active_rounds ADD COLUMN skip_min_game_time INTEGER NOT NULL DEFAULT 0")
+                if "second_lowest_user" not in ar_columns:
+                    conn.execute("ALTER TABLE active_rounds ADD COLUMN second_lowest_user INTEGER")
+                if "second_highest_user" not in ar_columns:
+                    conn.execute("ALTER TABLE active_rounds ADD COLUMN second_highest_user INTEGER")
+
+            if "pending_questions" in existing_tables:
+                pq_columns = {row["name"] for row in conn.execute("PRAGMA table_info(pending_questions)").fetchall()}
+                if "extra_questioner_id" not in pq_columns:
+                    conn.execute("ALTER TABLE pending_questions ADD COLUMN extra_questioner_id INTEGER")
+                if "questions_remaining" not in pq_columns:
+                    conn.execute("ALTER TABLE pending_questions ADD COLUMN questions_remaining INTEGER NOT NULL DEFAULT 1")
+                if "questioners_asked" not in pq_columns:
+                    conn.execute("ALTER TABLE pending_questions ADD COLUMN questioners_asked TEXT")
 
             if "guild_settings" in existing_tables:
                 gs_columns = {row["name"] for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
@@ -73,7 +86,9 @@ class StateStore:
                     auto_close_players INTEGER,
                     auto_close_minutes INTEGER,
                     created_at REAL,
-                    skip_min_game_time INTEGER NOT NULL DEFAULT 0
+                    skip_min_game_time INTEGER NOT NULL DEFAULT 0,
+                    second_lowest_user INTEGER,
+                    second_highest_user INTEGER
                 );
 
                 CREATE TABLE IF NOT EXISTS round_rolls (
@@ -92,7 +107,10 @@ class StateStore:
                     prompt_message_id INTEGER,
                     participant_user_ids TEXT NOT NULL,
                     lowest_tie_user_ids TEXT,
-                    prompt_kind TEXT NOT NULL DEFAULT 'room'
+                    prompt_kind TEXT NOT NULL DEFAULT 'room',
+                    extra_questioner_id INTEGER,
+                    questions_remaining INTEGER NOT NULL DEFAULT 1,
+                    questioners_asked TEXT
                 );
                 """
             )
@@ -165,9 +183,11 @@ class StateStore:
                     auto_close_players,
                     auto_close_minutes,
                     created_at,
-                    skip_min_game_time
+                    skip_min_game_time,
+                    second_lowest_user,
+                    second_highest_user
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(game_id) DO UPDATE SET
                     channel_id = excluded.channel_id,
                     guild_id = excluded.guild_id,
@@ -180,7 +200,9 @@ class StateStore:
                     auto_close_players = excluded.auto_close_players,
                     auto_close_minutes = excluded.auto_close_minutes,
                     created_at = excluded.created_at,
-                    skip_min_game_time = excluded.skip_min_game_time
+                    skip_min_game_time = excluded.skip_min_game_time,
+                    second_lowest_user = excluded.second_lowest_user,
+                    second_highest_user = excluded.second_highest_user
                 """,
                 (
                     state.game_id,
@@ -196,6 +218,8 @@ class StateStore:
                     state.auto_close_minutes,
                     state.created_at,
                     int(state.skip_min_game_time),
+                    state.second_lowest_user,
+                    state.second_highest_user,
                 ),
             )
 
@@ -232,9 +256,12 @@ class StateStore:
                     prompt_message_id,
                     participant_user_ids,
                     lowest_tie_user_ids,
-                    prompt_kind
+                    prompt_kind,
+                    extra_questioner_id,
+                    questions_remaining,
+                    questioners_asked
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(game_id) DO UPDATE SET
                     channel_id = excluded.channel_id,
                     guild_id = excluded.guild_id,
@@ -242,7 +269,10 @@ class StateStore:
                     prompt_message_id = excluded.prompt_message_id,
                     participant_user_ids = excluded.participant_user_ids,
                     lowest_tie_user_ids = excluded.lowest_tie_user_ids,
-                    prompt_kind = excluded.prompt_kind
+                    prompt_kind = excluded.prompt_kind,
+                    extra_questioner_id = excluded.extra_questioner_id,
+                    questions_remaining = excluded.questions_remaining,
+                    questioners_asked = excluded.questioners_asked
                 """,
                 (
                     state.game_id,
@@ -253,6 +283,9 @@ class StateStore:
                     serialize_user_ids(state.participant_user_ids),
                     serialize_user_ids(state.lowest_tie_user_ids),
                     state.prompt_kind,
+                    state.extra_questioner_id,
+                    state.questions_remaining,
+                    serialize_user_ids(state.questioners_asked),
                 ),
             )
 
@@ -283,7 +316,9 @@ class StateStore:
                     auto_close_players,
                     auto_close_minutes,
                     created_at,
-                    skip_min_game_time
+                    skip_min_game_time,
+                    second_lowest_user,
+                    second_highest_user
                 FROM active_rounds
                 WHERE is_open = 1
                 """
@@ -304,6 +339,8 @@ class StateStore:
                     auto_close_minutes=int(row["auto_close_minutes"]) if row["auto_close_minutes"] is not None else None,
                     created_at=float(row["created_at"]) if row["created_at"] is not None else time.time(),
                     skip_min_game_time=bool(row["skip_min_game_time"]),
+                    second_lowest_user=int(row["second_lowest_user"]) if row["second_lowest_user"] is not None else None,
+                    second_highest_user=int(row["second_highest_user"]) if row["second_highest_user"] is not None else None,
                 )
                 for row in round_rows
             }
@@ -340,7 +377,10 @@ class StateStore:
                     prompt_message_id,
                     participant_user_ids,
                     lowest_tie_user_ids,
-                    prompt_kind
+                    prompt_kind,
+                    extra_questioner_id,
+                    questions_remaining,
+                    questioners_asked
                 FROM pending_questions
                 """
             ).fetchall()
@@ -357,6 +397,11 @@ class StateStore:
                 ),
                 lowest_tie_user_ids=deserialize_user_ids(row["lowest_tie_user_ids"]),
                 prompt_kind=str(row["prompt_kind"] or "room"),
+                extra_questioner_id=(
+                    int(row["extra_questioner_id"]) if row["extra_questioner_id"] is not None else None
+                ),
+                questions_remaining=int(row["questions_remaining"]) if row["questions_remaining"] is not None else 1,
+                questioners_asked=deserialize_user_ids(row["questioners_asked"]),
             )
             for row in rows
         ]

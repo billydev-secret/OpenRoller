@@ -19,6 +19,23 @@ def format_lowest_rolloff_note(tied_user_ids: set[int], selected_user_id: int | 
 
 
 def build_pending_prompt_content(state: PendingQuestionState) -> str:
+    if state.prompt_kind == "two_questioners":
+        target_mentions = format_user_mentions(state.participant_user_ids)
+        questioners_remaining = [
+            uid for uid in [state.winner_id, state.extra_questioner_id]
+            if uid is not None and uid not in state.questioners_asked
+        ]
+        questioner_mentions = " and ".join(f"<@{uid}>" for uid in questioners_remaining)
+        lines = [f"Someone rolled a **1**! {questioner_mentions} can each ask {target_mentions} a question."]
+        if state.questioners_asked:
+            already = " and ".join(
+                f"<@{uid}>" for uid in [state.winner_id, state.extra_questioner_id]
+                if uid is not None and uid in state.questioners_asked
+            )
+            lines.append(f"{already} has already asked.")
+        lines.append("Click **Ask Question** to send your question.")
+        return "\n".join(lines)
+
     if state.prompt_kind == "direct":
         selected_user_id = next(iter(sorted(state.participant_user_ids)), None)
         lowest_rolloff_note = format_lowest_rolloff_note(state.lowest_tie_user_ids, selected_user_id)
@@ -26,16 +43,24 @@ def build_pending_prompt_content(state: PendingQuestionState) -> str:
         lines = [f"<@{state.winner_id}> won the round."]
         if lowest_rolloff_note:
             lines.append(lowest_rolloff_note)
-        lines.append(f"Click **Ask Question** to send your question to {target_mentions}.")
+        if len(state.participant_user_ids) > 1:
+            lines.append(f"They rolled **100**! Click **Ask Question** to send your question to {target_mentions}.")
+        else:
+            lines.append(f"Click **Ask Question** to send your question to {target_mentions}.")
         return "\n".join(lines)
 
     return (
-        f"<@{state.winner_id}> rolled 69 and wins.\n"
-        "Click **Ask Question** to send your question to everyone who rolled."
+        f"<@{state.winner_id}> rolled **69** and wins.\n"
+        "Click **Ask Question** to post your question to everyone who rolled."
     )
 
 
-def build_pending_question_summary(state: PendingQuestionState, question_text: str) -> str:
+def build_pending_question_summary(state: PendingQuestionState, question_text: str, asker_id: int | None = None) -> str:
+    if state.prompt_kind == "two_questioners":
+        uid = asker_id if asker_id is not None else state.winner_id
+        target_mentions = format_user_mentions(state.participant_user_ids)
+        return f"<@{uid}> asked {target_mentions}:\n{question_text}"
+
     if state.prompt_kind == "direct":
         target_mentions = format_user_mentions(state.participant_user_ids)
         return f"<@{state.winner_id}> asked {target_mentions}:\n{question_text}"
@@ -87,15 +112,29 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
     if not state.is_open and state.highest_user:
         high_mention = f"<@{state.highest_user}>"
         if state.lowest_user is None:
-            result = f"69 rolled.\n{high_mention} wins and asks the room a question."
+            result = f"69 rolled.\n{high_mention} wins and asks the room a question in a thread."
         else:
-            result = f"{high_mention} asks\n<@{state.lowest_user}> answers"
+            low_mention = f"<@{state.lowest_user}>"
+            winner_rolled_100 = state.rolls.get(state.highest_user) == 100
+            loser_rolled_1 = state.rolls.get(state.lowest_user) == 1
+
+            if winner_rolled_100 and state.second_lowest_user is not None:
+                result = f"{high_mention} rolled **100** and asks\n{low_mention} and <@{state.second_lowest_user}> answer"
+            elif loser_rolled_1 and state.second_highest_user is not None:
+                result = f"{high_mention} and <@{state.second_highest_user}> each ask\n{low_mention} rolled **1** and answers"
+            else:
+                result = f"{high_mention} asks\n{low_mention} answers"
+
             lowest_rolloff_note = format_lowest_rolloff_note(
                 state.lowest_tie_user_ids,
                 state.lowest_user,
             )
             if lowest_rolloff_note:
                 result += f"\n{lowest_rolloff_note}"
+
+            if winner_rolled_100 and loser_rolled_1:
+                result += "\n*(both the 100 and 1 rules apply)*"
+
         embed.add_field(name="Result", value=result, inline=False)
 
     return embed

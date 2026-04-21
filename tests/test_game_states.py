@@ -289,7 +289,7 @@ class GameStatePresentationTests(unittest.TestCase):
         self.assertEqual("Round closed.", embed.description)
         self.assertEqual("Result", embed.fields[1].name)
         self.assertIn("69 rolled.", embed.fields[1].value)
-        self.assertIn("<@99> wins and asks the room a question.", embed.fields[1].value)
+        self.assertIn("<@99> wins and asks the room a question in a thread.", embed.fields[1].value)
 
     def test_build_pending_prompt_content_direct(self) -> None:
         state = PendingQuestionState(
@@ -335,7 +335,7 @@ class GameStatePresentationTests(unittest.TestCase):
 
         content = build_pending_prompt_content(state)
 
-        self.assertIn("<@10> rolled 69 and wins.", content)
+        self.assertIn("<@10> rolled **69** and wins.", content)
         self.assertIn("everyone who rolled", content)
 
     def test_build_pending_question_summary_direct(self) -> None:

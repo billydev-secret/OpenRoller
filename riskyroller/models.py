@@ -44,6 +44,8 @@ class RiskyRollState:
     auto_close_minutes: int | None = None
     created_at: float = field(default_factory=time.time)
     skip_min_game_time: bool = False
+    second_lowest_user: int | None = None
+    second_highest_user: int | None = None
 
     def add_roll(self, user_id: int, value: int) -> None:
         self.rolls[user_id] = value
@@ -66,6 +68,8 @@ class RiskyRollState:
         self.highest_user = None
         self.lowest_user = None
         self.lowest_tie_user_ids.clear()
+        self.second_lowest_user = None
+        self.second_highest_user = None
 
     def reroll_mentions(self) -> str:
         return ", ".join(f"<@{user_id}>" for user_id in sorted(self.reroll_user_ids))
@@ -73,6 +77,46 @@ class RiskyRollState:
     def pending_reroll_mentions(self) -> str:
         pending_user_ids = [user_id for user_id in self.reroll_user_ids if user_id not in self.rolls]
         return ", ".join(f"<@{user_id}>" for user_id in pending_user_ids)
+
+    def _find_second_lowest(self) -> int | None:
+        """2nd lowest roll, excluding the winner and the already-selected lowest."""
+        if self.highest_user is None or self.lowest_user is None:
+            return None
+        candidates = [
+            (uid, r) for uid, r in self.rolls.items()
+            if uid != self.highest_user and uid != self.lowest_user
+        ]
+        if not candidates:
+            return None
+        min_val = min(r for _, r in candidates)
+        tied = [uid for uid, r in candidates if r == min_val]
+        if len(tied) == 1:
+            return tied[0]
+        winner_id, _ = run_tie_rolloff(tied, pick_lowest=True)
+        return winner_id
+
+    def _find_second_highest(self) -> int | None:
+        """2nd highest roll, excluding the winner and the already-selected lowest."""
+        if self.highest_user is None or self.lowest_user is None:
+            return None
+        candidates = [
+            (uid, r) for uid, r in self.rolls.items()
+            if uid != self.highest_user and uid != self.lowest_user
+        ]
+        if not candidates:
+            return None
+        max_val = max(r for _, r in candidates)
+        tied = [uid for uid, r in candidates if r == max_val]
+        if len(tied) == 1:
+            return tied[0]
+        winner_id, _ = run_tie_rolloff(tied)
+        return winner_id
+
+    def _apply_special_roll_rules(self) -> None:
+        if self.highest_user is not None and self.rolls.get(self.highest_user) == 100:
+            self.second_lowest_user = self._find_second_lowest()
+        if self.lowest_user is not None and self.rolls.get(self.lowest_user) == 1:
+            self.second_highest_user = self._find_second_highest()
 
     def resolve(self) -> ResolutionResult:
         self.lowest_tie_user_ids.clear()
@@ -130,6 +174,7 @@ class RiskyRollState:
             self.lowest_user = lowest_id
             self.is_open = False
             self.reroll_user_ids.clear()
+            self._apply_special_roll_rules()
             log.info("Game %s: Highest tie resolved. Winner: %s, Lowest: %s", self.game_id, winner_id, lowest_id)
             return ResolutionResult(
                 result_type=RoundResult.TIE,
@@ -151,6 +196,7 @@ class RiskyRollState:
         self.highest_user = highest_users[0]
         self.lowest_user = lowest_id
         self.is_open = False
+        self._apply_special_roll_rules()
         log.info("Game %s: Round resolved. Winner: %s, Lowest: %s", self.game_id, highest_users[0], lowest_id)
         return ResolutionResult(
             result_type=RoundResult.OK,
@@ -169,3 +215,6 @@ class PendingQuestionState:
     lowest_tie_user_ids: set[int] = field(default_factory=set)
     prompt_message_id: int | None = None
     prompt_kind: str = "room"
+    extra_questioner_id: int | None = None
+    questions_remaining: int = 1
+    questioners_asked: set[int] = field(default_factory=set)
