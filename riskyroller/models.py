@@ -18,6 +18,12 @@ class RoundResult(Enum):
     OK = auto()
 
 
+class PromptKind(str, Enum):
+    ROOM = "room"
+    DIRECT = "direct"
+    TWO_QUESTIONERS = "two_questioners"
+
+
 @dataclass
 class ResolutionResult:
     result_type: RoundResult
@@ -103,10 +109,8 @@ class RiskyRollState:
     def resolve(self) -> ResolutionResult:
         self.lowest_tie_user_ids.clear()
 
-        if self.reroll_user_ids:
-            pending_user_ids = [user_id for user_id in self.reroll_user_ids if user_id not in self.rolls]
-            if pending_user_ids:
-                return ResolutionResult(result_type=RoundResult.WAITING_FOR_REROLLS)
+        if self.reroll_user_ids and any(uid not in self.rolls for uid in self.reroll_user_ids):
+            return ResolutionResult(result_type=RoundResult.WAITING_FOR_REROLLS)
 
         if len(self.rolls) < 2:
             return ResolutionResult(result_type=RoundResult.NOT_ENOUGH)
@@ -167,7 +171,7 @@ class RiskyRollState:
             )
 
         lowest_users = [user_id for user_id, roll in self.rolls.items() if roll == min_value]
-        lowest_rolloff_rounds: list[dict[int, int]] | None = None
+        lowest_rolloff_rounds = None
         if len(lowest_users) > 1:
             lowest_id, lowest_rolloff_rounds = run_tie_rolloff(lowest_users, pick_lowest=True)
             self.lowest_tie_user_ids = set(lowest_users)
@@ -196,7 +200,7 @@ class PendingQuestionState:
     game_id: str
     lowest_tie_user_ids: set[int] = field(default_factory=set)
     prompt_message_id: int | None = None
-    prompt_kind: str = "room"
+    prompt_kind: PromptKind = PromptKind.ROOM
     extra_questioner_id: int | None = None
     questioners_asked: set[int] = field(default_factory=set)
 

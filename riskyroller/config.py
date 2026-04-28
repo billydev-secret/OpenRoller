@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TOKEN: str | None = os.getenv("DISCORD_TOKEN")
-DEBUG_GUILD_ID: int | None = int(os.getenv("GUILD_ID")) if os.getenv("GUILD_ID") else None
+_GUILD_ID_RAW: str | None = os.getenv("GUILD_ID")
+DEBUG_GUILD_ID: int | None = int(_GUILD_ID_RAW) if _GUILD_ID_RAW else None
 DATABASE_PATH: str = os.getenv("STATE_DB_PATH", "riskyroller.sqlite3")
 
 

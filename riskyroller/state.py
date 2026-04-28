@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import weakref
 
 from .config import DATABASE_PATH
@@ -12,7 +13,15 @@ pending_questions: dict[str, PendingQuestionState] = {}
 ping_roles: dict[int, int] = {}
 min_game_seconds: dict[int, int] = {}
 auto_close_tasks: dict[str, asyncio.Task] = {}
-question_messages: dict[int, int] = {}
+
+QUESTION_MESSAGE_CACHE_LIMIT = 5000
+question_messages: collections.OrderedDict[int, int] = collections.OrderedDict()
+
+
+def remember_question_message(message_id: int, asker_id: int) -> None:
+    question_messages[message_id] = asker_id
+    while len(question_messages) > QUESTION_MESSAGE_CACHE_LIMIT:
+        question_messages.popitem(last=False)
 
 _channel_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = weakref.WeakValueDictionary()
 _game_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()

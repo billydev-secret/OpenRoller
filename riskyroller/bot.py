@@ -8,7 +8,7 @@ from discord import app_commands
 from . import commands
 from . import state as app_state
 from .config import DEBUG, DEBUG_GUILD_ID, DEFAULT_MIN_GAME_SECONDS, SYNC_COMMANDS_ON_STARTUP
-from .views import RiskyRollView, SixtyNineQuestionView, auto_close_round
+from .views import RiskyRollView, SixtyNineQuestionView, schedule_auto_close
 
 log = logging.getLogger(__name__)
 
@@ -25,10 +25,16 @@ class Bot(discord.Client):
         commands.setup(self)
 
         await app_state.store.initialize()
-        app_state.ping_roles.update(await app_state.store.load_ping_roles())
-        app_state.min_game_seconds.update(await app_state.store.load_min_game_times())
+        ping_roles, min_game_times, active_rounds, pending_questions = await asyncio.gather(
+            app_state.store.load_ping_roles(),
+            app_state.store.load_min_game_times(),
+            app_state.store.load_active_rounds(),
+            app_state.store.load_pending_questions(),
+        )
+        app_state.ping_roles.update(ping_roles)
+        app_state.min_game_seconds.update(min_game_times)
 
-        for state in await app_state.store.load_active_rounds():
+        for state in active_rounds:
             if state.message_id is not None:
                 app_state.active_games[state.game_id] = state
                 self.add_view(RiskyRollView(state.game_id), message_id=state.message_id)
@@ -37,14 +43,9 @@ class Bot(discord.Client):
                     elapsed = time.time() - state.created_at
                     min_seconds = 0 if state.skip_min_game_time else app_state.min_game_seconds.get(state.guild_id, DEFAULT_MIN_GAME_SECONDS)
                     remaining = max(0.0, min_seconds - elapsed)
-
-                    async def _player_threshold_close(game_id: str = state.game_id, delay: float = remaining) -> None:
-                        if delay > 0:
-                            await asyncio.sleep(delay)
-                        await auto_close_round(self, game_id)
-
-                    task = asyncio.create_task(_player_threshold_close())
-                    app_state.auto_close_tasks[state.game_id] = task
+                    app_state.auto_close_tasks[state.game_id] = asyncio.create_task(
+                        schedule_auto_close(self, state.game_id, remaining)
+                    )
                     log.info(
                         "Restored auto-close for game %s: player threshold already met (%d/%d), closing in %.0fs.",
                         state.game_id,
@@ -55,13 +56,9 @@ class Bot(discord.Client):
                 elif state.auto_close_minutes:
                     elapsed = time.time() - state.created_at
                     remaining = max(0.0, state.auto_close_minutes * 60 - elapsed)
-
-                    async def _timed_close(game_id: str = state.game_id, delay: float = remaining) -> None:
-                        await asyncio.sleep(delay)
-                        await auto_close_round(self, game_id)
-
-                    task = asyncio.create_task(_timed_close())
-                    app_state.auto_close_tasks[state.game_id] = task
+                    app_state.auto_close_tasks[state.game_id] = asyncio.create_task(
+                        schedule_auto_close(self, state.game_id, remaining)
+                    )
                     log.info(
                         "Restored auto-close timer for game %s (%.0fs remaining).",
                         state.game_id,
@@ -71,7 +68,7 @@ class Bot(discord.Client):
                 log.warning("Active round for game %s is missing a message_id.", state.game_id)
                 await app_state.store.delete_round(state.game_id)
 
-        for state in await app_state.store.load_pending_questions():
+        for state in pending_questions:
             if state.prompt_message_id is not None:
                 app_state.pending_questions[state.game_id] = state
                 self.add_view(SixtyNineQuestionView(state.game_id), message_id=state.prompt_message_id)

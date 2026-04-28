@@ -4,6 +4,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from typing import Any
 
 from riskyroller.models import PendingQuestionState, RiskyRollState
 from riskyroller.store import StateStore
@@ -23,8 +24,8 @@ class StoreTests(unittest.TestCase):
         os.close(self.db_fd)
         os.unlink(self.db_path)
 
-    def make_state(self, **kwargs) -> RiskyRollState:
-        defaults = dict(channel_id=100, guild_id=200, opener_id=300)
+    def make_state(self, **kwargs: Any) -> RiskyRollState:
+        defaults: dict[str, Any] = {"channel_id": 100, "guild_id": 200, "opener_id": 300}
         defaults.update(kwargs)
         return RiskyRollState(**defaults)
 
@@ -165,7 +166,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([], loaded)
 
     def test_delete_nonexistent_round_is_safe(self) -> None:
-        run(self.store.delete_round(999))  # Should not raise
+        run(self.store.delete_round("999"))  # Should not raise
 
     # --- created_at defaults ---
 
@@ -230,7 +231,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([], run(self.store.load_pending_questions()))
 
     def test_delete_nonexistent_pending_question_is_safe(self) -> None:
-        run(self.store.delete_pending_question(999))  # Should not raise
+        run(self.store.delete_pending_question("999"))  # Should not raise
 
     def test_save_pending_question_updates_existing(self) -> None:
         state = PendingQuestionState(

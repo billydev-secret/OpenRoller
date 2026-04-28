@@ -2,7 +2,7 @@ import logging
 
 import discord
 
-from .models import PendingQuestionState, RiskyRollState
+from .models import PendingQuestionState, PromptKind, RiskyRollState
 
 log = logging.getLogger(__name__)
 
@@ -29,25 +29,27 @@ def _roll_prefix(user_id: int, roll: int, state: RiskyRollState) -> str:
     return "🎲"
 
 
+def _questioner_mentions(state: PendingQuestionState, *, asked: bool) -> str:
+    return " and ".join(
+        f"<@{uid}>"
+        for uid in [state.winner_id, state.extra_questioner_id]
+        if uid is not None and (uid in state.questioners_asked) == asked
+    )
+
+
 def build_pending_prompt_content(state: PendingQuestionState) -> str:
-    if state.prompt_kind == "two_questioners":
+    if state.prompt_kind == PromptKind.TWO_QUESTIONERS:
         target_mentions = format_user_mentions(state.participant_user_ids)
-        questioners_remaining = [
-            uid for uid in [state.winner_id, state.extra_questioner_id]
-            if uid is not None and uid not in state.questioners_asked
+        lines = [
+            f"☠️ Someone rolled a **1**! {_questioner_mentions(state, asked=False)} "
+            f"can each fire a question at {target_mentions}."
         ]
-        questioner_mentions = " and ".join(f"<@{uid}>" for uid in questioners_remaining)
-        lines = [f"☠️ Someone rolled a **1**! {questioner_mentions} can each fire a question at {target_mentions}."]
         if state.questioners_asked:
-            already = " and ".join(
-                f"<@{uid}>" for uid in [state.winner_id, state.extra_questioner_id]
-                if uid is not None and uid in state.questioners_asked
-            )
-            lines.append(f"{already} already asked.")
+            lines.append(f"{_questioner_mentions(state, asked=True)} already asked.")
         lines.append("Click **Ask Question** to send yours.")
         return "\n".join(lines)
 
-    if state.prompt_kind == "direct":
+    if state.prompt_kind == PromptKind.DIRECT:
         selected_user_id = next(iter(sorted(state.participant_user_ids)), None)
         lowest_rolloff_note = format_lowest_rolloff_note(state.lowest_tie_user_ids, selected_user_id)
         target_mentions = format_user_mentions(state.participant_user_ids)
@@ -67,16 +69,26 @@ def build_pending_prompt_content(state: PendingQuestionState) -> str:
 
 
 def build_pending_question_summary(state: PendingQuestionState, question_text: str, asker_id: int | None = None) -> str:
-    if state.prompt_kind == "two_questioners":
+    if state.prompt_kind == PromptKind.TWO_QUESTIONERS:
         uid = asker_id if asker_id is not None else state.winner_id
         target_mentions = format_user_mentions(state.participant_user_ids)
         return f"<@{uid}> asked {target_mentions}:\n> {question_text}"
 
-    if state.prompt_kind == "direct":
+    if state.prompt_kind == PromptKind.DIRECT:
         target_mentions = format_user_mentions(state.participant_user_ids)
         return f"<@{state.winner_id}> asked {target_mentions}:\n> {question_text}"
 
     return f"<@{state.winner_id}> rolled 69 and asked:\n> {question_text}"
+
+
+def _add_reroll_field(embed: discord.Embed, state: RiskyRollState, *, show_all_in_message: bool) -> None:
+    reroll_text = f"Tied: {state.reroll_mentions()}"
+    pending_mentions = state.pending_reroll_mentions()
+    if pending_mentions:
+        reroll_text += f"\nWaiting on: {pending_mentions}"
+    elif show_all_in_message:
+        reroll_text += "\nAll rerolls in — close the round."
+    embed.add_field(name="⚔️ Reroll", value=reroll_text, inline=False)
 
 
 def build_embed(state: RiskyRollState) -> discord.Embed:
@@ -108,11 +120,7 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
     if not state.rolls:
         embed.add_field(name="Rolls (0)", value="No rolls yet.", inline=False)
         if state.reroll_user_ids:
-            reroll_text = f"Tied: {state.reroll_mentions()}"
-            pending_mentions = state.pending_reroll_mentions()
-            if pending_mentions:
-                reroll_text += f"\nWaiting on: {pending_mentions}"
-            embed.add_field(name="⚔️ Reroll", value=reroll_text, inline=False)
+            _add_reroll_field(embed, state, show_all_in_message=False)
         return embed
 
     sorted_rolls = sorted(state.rolls.items(), key=lambda item: item[1], reverse=True)
@@ -123,13 +131,7 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
     embed.add_field(name=f"Rolls ({len(state.rolls)})", value="\n".join(lines), inline=False)
 
     if state.reroll_user_ids:
-        reroll_text = f"Tied: {state.reroll_mentions()}"
-        pending_mentions = state.pending_reroll_mentions()
-        if pending_mentions:
-            reroll_text += f"\nWaiting on: {pending_mentions}"
-        else:
-            reroll_text += "\nAll rerolls in — close the round."
-        embed.add_field(name="⚔️ Reroll", value=reroll_text, inline=False)
+        _add_reroll_field(embed, state, show_all_in_message=True)
 
     if not state.is_open and state.highest_user:
         high_mention = f"<@{state.highest_user}>"
@@ -204,7 +206,7 @@ async def get_text_channel(
 
 
 async def post_rolloff_embed(
-    channel: discord.abc.GuildChannel | discord.Thread | None,
+    channel: discord.abc.Messageable | discord.abc.GuildChannel | None,
     tied_user_ids: list[int],
     rolloff_rounds: list[dict[int, int]],
     winner_id: int,

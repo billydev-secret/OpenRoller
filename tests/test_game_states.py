@@ -234,8 +234,8 @@ class GameStatePresentationTests(unittest.TestCase):
 
         self.assertEqual("Tie for highest roll. Tied players must reroll.", embed.description)
         self.assertEqual("Reroll", embed.fields[1].name)
-        self.assertIn("Tied users: <@11>, <@22>", embed.fields[1].value)
-        self.assertIn("Waiting on: <@22>", embed.fields[1].value)
+        self.assertIn("Tied users: <@11>, <@22>", embed.fields[1].value or "")
+        self.assertIn("Waiting on: <@22>", embed.fields[1].value or "")
 
     def test_build_embed_for_closed_standard_result(self) -> None:
         state = RiskyRollState(
@@ -270,8 +270,8 @@ class GameStatePresentationTests(unittest.TestCase):
 
         self.assertEqual("Round closed.", embed.description)
         self.assertEqual("Result", embed.fields[1].name)
-        self.assertIn("<@44> asks\n<@55> answers", embed.fields[1].value)
-        self.assertIn("<@55>, <@66> -> <@55>.", embed.fields[1].value)
+        self.assertIn("<@44> asks\n<@55> answers", embed.fields[1].value or "")
+        self.assertIn("<@55>, <@66> -> <@55>.", embed.fields[1].value or "")
 
     def test_build_embed_for_closed_sixtynine_result(self) -> None:
         state = RiskyRollState(
@@ -288,8 +288,8 @@ class GameStatePresentationTests(unittest.TestCase):
 
         self.assertEqual("Round closed.", embed.description)
         self.assertEqual("Result", embed.fields[1].name)
-        self.assertIn("69 rolled.", embed.fields[1].value)
-        self.assertIn("<@99> wins and asks the room a question in a thread.", embed.fields[1].value)
+        self.assertIn("69 rolled.", embed.fields[1].value or "")
+        self.assertIn("<@99> wins and asks the room a question in a thread.", embed.fields[1].value or "")
 
     def test_build_pending_prompt_content_direct(self) -> None:
         state = PendingQuestionState(

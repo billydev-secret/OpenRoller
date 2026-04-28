@@ -4,7 +4,7 @@ import sqlite3
 import time
 
 from .logic import deserialize_user_ids, serialize_user_ids
-from .models import PendingQuestionState, RiskyRollState
+from .models import PendingQuestionState, PromptKind, RiskyRollState
 
 log = logging.getLogger(__name__)
 
@@ -55,8 +55,6 @@ class StateStore:
                 pq_columns = {row["name"] for row in conn.execute("PRAGMA table_info(pending_questions)").fetchall()}
                 if "extra_questioner_id" not in pq_columns:
                     conn.execute("ALTER TABLE pending_questions ADD COLUMN extra_questioner_id INTEGER")
-                if "questions_remaining" not in pq_columns:
-                    conn.execute("ALTER TABLE pending_questions ADD COLUMN questions_remaining INTEGER NOT NULL DEFAULT 1")
                 if "questioners_asked" not in pq_columns:
                     conn.execute("ALTER TABLE pending_questions ADD COLUMN questioners_asked TEXT")
 
@@ -109,7 +107,6 @@ class StateStore:
                     lowest_tie_user_ids TEXT,
                     prompt_kind TEXT NOT NULL DEFAULT 'room',
                     extra_questioner_id INTEGER,
-                    questions_remaining INTEGER NOT NULL DEFAULT 1,
                     questioners_asked TEXT
                 );
                 """
@@ -391,7 +388,7 @@ class StateStore:
                     int(row["prompt_message_id"]) if row["prompt_message_id"] is not None else None
                 ),
                 lowest_tie_user_ids=deserialize_user_ids(row["lowest_tie_user_ids"]),
-                prompt_kind=str(row["prompt_kind"] or "room"),
+                prompt_kind=PromptKind(row["prompt_kind"] or PromptKind.ROOM.value),
                 extra_questioner_id=(
                     int(row["extra_questioner_id"]) if row["extra_questioner_id"] is not None else None
                 ),

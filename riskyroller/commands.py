@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 import discord
 from discord import app_commands
@@ -8,9 +9,20 @@ from . import state as app_state
 from .formatters import build_embed
 from .models import RiskyRollState
 from .store import MAX_GAMES_PER_CHANNEL
-from .views import RiskyRollView, SixtyNineQuestionView, auto_close_round, disable_pending_question_message, disable_round_message
+from .showcase import build_showcase_messages
+from .views import RiskyRollView, disable_pending_question_message, disable_round_message, schedule_auto_close
+
+if TYPE_CHECKING:
+    from .bot import Bot
 
 log = logging.getLogger(__name__)
+
+
+async def _send_ephemeral(interaction: discord.Interaction, message: str) -> None:
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
 
 
 async def _start_game(
@@ -22,10 +34,7 @@ async def _start_game(
 ) -> None:
     """Shared implementation for risky_start and risky_start_no_ping."""
     if interaction.guild is None or interaction.channel is None:
-        await interaction.response.send_message(
-            "This command can only be used in a server channel.",
-            ephemeral=True,
-        )
+        await _send_ephemeral(interaction, "This command can only be used in a server channel.")
         return
 
     me = interaction.guild.me
@@ -33,7 +42,6 @@ async def _start_game(
     missing = [
         name for allowed, name in [
             (perms.send_messages, "Send Messages"),
-            (perms.read_message_history, "Read Message History"),
             (perms.embed_links, "Embed Links"),
         ]
         if not allowed
@@ -68,7 +76,6 @@ async def _start_game(
             skip_min_game_time=skip_min_game_time,
         )
         app_state.active_games[state.game_id] = state
-        await app_state.store.save_round(state)
 
         content = None
         allowed_mentions = discord.AllowedMentions.none()
@@ -92,16 +99,9 @@ async def _start_game(
             await app_state.store.save_round(state)
 
             if auto_close_minutes and auto_close_minutes > 0:
-                _client = interaction.client
-                _game_id = state.game_id
-                _minutes = auto_close_minutes
-
-                async def _timed_close() -> None:
-                    await asyncio.sleep(_minutes * 60)
-                    await auto_close_round(_client, _game_id)
-
-                task = asyncio.create_task(_timed_close())
-                app_state.auto_close_tasks[state.game_id] = task
+                app_state.auto_close_tasks[state.game_id] = asyncio.create_task(
+                    schedule_auto_close(interaction.client, state.game_id, auto_close_minutes * 60)
+                )
         except Exception:
             app_state.active_games.pop(state.game_id, None)
             await app_state.store.delete_round(state.game_id)
@@ -127,7 +127,7 @@ async def _start_game(
             raise
 
 
-def setup(bot: discord.Client) -> None:
+def setup(bot: "Bot") -> None:
     @bot.tree.command(
         name="risky_start",
         description="Open a new Risky Rolls round in this channel",
@@ -181,10 +181,7 @@ def setup(bot: discord.Client) -> None:
     @app_commands.describe(role="Role to mention at the start of each new round")
     async def risky_set_ping(interaction: discord.Interaction, role: discord.Role):
         if interaction.guild is None:
-            await interaction.response.send_message(
-                "This command can only be used in a server.",
-                ephemeral=True,
-            )
+            await _send_ephemeral(interaction, "This command can only be used in a server.")
             return
 
         app_state.ping_roles[interaction.guild.id] = role.id
@@ -205,33 +202,21 @@ def setup(bot: discord.Client) -> None:
     @app_commands.describe(seconds="Minimum seconds a round must be open before closing (0 to disable)")
     async def risky_set_min_game_time(interaction: discord.Interaction, seconds: int):
         if interaction.guild is None:
-            await interaction.response.send_message(
-                "This command can only be used in a server.",
-                ephemeral=True,
-            )
+            await _send_ephemeral(interaction, "This command can only be used in a server.")
             return
 
         if seconds < 0:
-            await interaction.response.send_message(
-                "Minimum game time cannot be negative.",
-                ephemeral=True,
-            )
+            await _send_ephemeral(interaction, "Minimum game time cannot be negative.")
             return
 
         if seconds == 0:
             app_state.min_game_seconds.pop(interaction.guild.id, None)
             await app_state.store.set_min_game_time(interaction.guild.id, None)
-            await interaction.response.send_message(
-                "Minimum game time disabled.",
-                ephemeral=True,
-            )
+            await _send_ephemeral(interaction, "Minimum game time disabled.")
         else:
             app_state.min_game_seconds[interaction.guild.id] = seconds
             await app_state.store.set_min_game_time(interaction.guild.id, seconds)
-            await interaction.response.send_message(
-                f"Minimum game time set to {seconds} second(s).",
-                ephemeral=True,
-            )
+            await _send_ephemeral(interaction, f"Minimum game time set to {seconds} second(s).")
 
     @bot.tree.command(
         name="risky_reset_state",
@@ -241,10 +226,7 @@ def setup(bot: discord.Client) -> None:
     @app_commands.checks.has_permissions(administrator=True)
     async def risky_reset_state(interaction: discord.Interaction):
         if interaction.channel is None:
-            await interaction.response.send_message(
-                "This command can only be used in a server channel.",
-                ephemeral=True,
-            )
+            await _send_ephemeral(interaction, "This command can only be used in a server channel.")
             return
 
         async with app_state.get_channel_lock(interaction.channel.id):
@@ -297,10 +279,7 @@ def setup(bot: discord.Client) -> None:
     )
     async def invite(interaction: discord.Interaction):
         if interaction.client.user is None:
-            await interaction.response.send_message(
-                "Bot is not ready yet. Try again in a moment.",
-                ephemeral=True,
-            )
+            await _send_ephemeral(interaction, "Bot is not ready yet. Try again in a moment.")
             return
 
         url = discord.utils.oauth_url(
@@ -308,7 +287,6 @@ def setup(bot: discord.Client) -> None:
             permissions=discord.Permissions(
                 send_messages=True,
                 embed_links=True,
-                read_message_history=True,
             ),
             scopes=["bot", "applications.commands"],
         )
@@ -317,11 +295,44 @@ def setup(bot: discord.Client) -> None:
             ephemeral=True,
         )
 
-    async def _send_ephemeral(interaction: discord.Interaction, message: str) -> None:
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
+    @bot.tree.command(
+        name="support",
+        description="Get a link to the Risky Rolls support Discord server",
+    )
+    async def support(interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "[Join the Risky Rolls support server](https://discord.gg/7gfbYYkH)",
+            ephemeral=True,
+        )
+
+    @bot.tree.command(
+        name="risky_showcase",
+        description="Post sample embeds of every game flow (for screenshots — non-functional)",
+    )
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def risky_showcase(interaction: discord.Interaction):
+        if not isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
+            await interaction.response.send_message(
+                "This command must be used in a server text channel.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            "Posting showcase flows…",
+            ephemeral=True,
+        )
+
+        for header, content, embeds in build_showcase_messages():
+            message_text = f"-# {header}"
+            if content:
+                message_text += f"\n{content}"
+            await interaction.followup.send(
+                content=message_text,
+                embeds=embeds,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
     @bot.tree.error
     async def on_app_command_error(
