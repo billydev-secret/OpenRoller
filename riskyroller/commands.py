@@ -6,10 +6,10 @@ import discord
 from discord import app_commands
 
 from . import state as app_state
-from .formatters import build_embed
+from .formatters import build_embed, build_notice_embed
 from .models import RiskyRollState
 from .store import MAX_GAMES_PER_CHANNEL
-from .showcase import build_showcase_messages
+from .showcase import ThreadMessage, build_showcase_messages
 from .views import RiskyRollView, disable_pending_question_message, disable_round_message, schedule_auto_close
 
 if TYPE_CHECKING:
@@ -264,7 +264,7 @@ def setup(bot: "Bot") -> None:
                     await disable_pending_question_message(
                         interaction.client,
                         pending_state,
-                        "The pending question prompt was cleared by an administrator.",
+                        build_notice_embed("The pending question prompt was cleared by an administrator."),
                     )
                 await app_state.store.delete_pending_question(game_id)
 
@@ -351,11 +351,19 @@ def setup(bot: "Bot") -> None:
                     continue
 
                 for thread_message in item.thread_messages:
+                    if isinstance(thread_message, ThreadMessage):
+                        send_kwargs = {"allowed_mentions": discord.AllowedMentions.none()}
+                        if thread_message.content is not None:
+                            send_kwargs["content"] = thread_message.content
+                        if thread_message.embed is not None:
+                            send_kwargs["embed"] = thread_message.embed
+                    else:
+                        send_kwargs = {
+                            "content": thread_message,
+                            "allowed_mentions": discord.AllowedMentions.none(),
+                        }
                     try:
-                        await thread.send(
-                            content=thread_message,
-                            allowed_mentions=discord.AllowedMentions.none(),
-                        )
+                        await thread.send(**send_kwargs)
                     except (discord.Forbidden, discord.HTTPException):
                         log.exception("Showcase: failed to send thread message in %s", thread.name)
                         break

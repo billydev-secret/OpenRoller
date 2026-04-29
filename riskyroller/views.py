@@ -10,9 +10,14 @@ from . import state as app_state
 from .config import DEFAULT_MIN_GAME_SECONDS
 from .formatters import (
     build_embed,
-    build_pending_prompt_content,
-    build_pending_question_summary,
+    build_notice_embed,
+    build_pending_prompt_embed,
+    build_pending_question_summary_embed,
+    build_question_post_embed,
     build_question_reply_embed,
+    build_reply_notification_embed,
+    collect_prompt_mention_ids,
+    format_mention_list,
     format_user_mentions,
     get_text_channel,
     post_rolloff_embed,
@@ -52,7 +57,9 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
             await app_state.store.delete_round(game_id)
             if channel is not None:
                 await disable_round_message(state, channel)
-                await channel.send("Round auto-closed: not enough players rolled.")
+                await channel.send(
+                    embed=build_notice_embed("Round auto-closed: not enough players rolled.")
+                )
             return
 
         if resolution.rolloff_rounds and state.highest_user is not None:
@@ -144,9 +151,20 @@ async def _send_question_message(
     target_rolled_1: bool,
 ) -> bool:
     target_mentions = format_user_mentions(pending.participant_user_ids)
+    posted = PostedQuestionState(
+        message_id=0,
+        channel_id=pending.channel_id,
+        guild_id=pending.guild_id,
+        asker_id=asker_id,
+        allowed_replier_ids=set(pending.participant_user_ids),
+        question_text=question_text,
+        asker_rolled_100=asker_rolled_100,
+        target_rolled_1=target_rolled_1,
+    )
     try:
         question_msg = await interaction.followup.send(
-            content=f"{target_mentions}\n<@{asker_id}> asks:\n{question_text}",
+            content=target_mentions,
+            embed=build_question_post_embed(posted),
             allowed_mentions=discord.AllowedMentions(users=True),
             ephemeral=False,
             wait=True,
@@ -157,18 +175,8 @@ async def _send_question_message(
         await interaction.followup.send("I could not send the question. Please try again.", ephemeral=True)
         return False
 
-    await _register_posted_question(
-        PostedQuestionState(
-            message_id=question_msg.id,
-            channel_id=pending.channel_id,
-            guild_id=pending.guild_id,
-            asker_id=asker_id,
-            allowed_replier_ids=set(pending.participant_user_ids),
-            question_text=question_text,
-            asker_rolled_100=asker_rolled_100,
-            target_rolled_1=target_rolled_1,
-        )
-    )
+    posted.message_id = question_msg.id
+    await _register_posted_question(posted)
     return True
 
 
@@ -216,7 +224,8 @@ def _build_one_rule_prompt_state(game_id: str, state: RiskyRollState) -> Pending
 
 async def _send_and_register_prompt(send_fn, game_id: str, prompt_state: PendingQuestionState):
     message = await send_fn(
-        content=build_pending_prompt_content(prompt_state),
+        content=format_mention_list(collect_prompt_mention_ids(prompt_state)),
+        embed=build_pending_prompt_embed(prompt_state),
         allowed_mentions=discord.AllowedMentions(users=True),
         view=SixtyNineQuestionView(game_id),
     )
@@ -261,9 +270,17 @@ async def _send_question_prompts_channel(
         return
     except Exception:
         log.exception("Auto-close: failed to send winner prompt for game %s.", game_id)
-        await disable_pending_question_message(client, main_prompt, "Risky Rolls could not prepare the question prompt.")
+        await disable_pending_question_message(
+            client,
+            main_prompt,
+            build_notice_embed("Risky Rolls could not prepare the question prompt."),
+        )
         try:
-            await channel.send("The round ended but the winner prompt could not be sent. Please start a new round.")
+            await channel.send(
+                embed=build_notice_embed(
+                    "The round ended but the winner prompt could not be sent. Please start a new round."
+                )
+            )
         except Exception:
             log.exception("Auto-close: also failed to send fallback message for game %s.", game_id)
         return
@@ -291,7 +308,11 @@ async def _send_question_prompts_followup(
     try:
         await _send_and_register_prompt(send_via_followup, game_id, main_prompt)
     except Exception:
-        await disable_pending_question_message(interaction.client, main_prompt, "Risky Rolls could not prepare the question prompt.")
+        await disable_pending_question_message(
+            interaction.client,
+            main_prompt,
+            build_notice_embed("Risky Rolls could not prepare the question prompt."),
+        )
         raise
 
     if resolution.result_type in (RoundResult.SIXTYNINE, RoundResult.SIXTYNINE_TIE):
@@ -527,17 +548,28 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                     thread = None
 
                 all_mentions = format_user_mentions(state.participant_user_ids)
-                content = f"{all_mentions}\n<@{asker_id}> asks:\n{question_text}"
+                room_post_embed = build_question_post_embed(
+                    PostedQuestionState(
+                        message_id=0,
+                        channel_id=state.channel_id,
+                        guild_id=state.guild_id,
+                        asker_id=asker_id,
+                        allowed_replier_ids=set(state.participant_user_ids),
+                        question_text=question_text,
+                    )
+                )
 
                 try:
                     if thread is not None:
                         await thread.send(
-                            content=content,
+                            content=all_mentions,
+                            embed=room_post_embed,
                             allowed_mentions=discord.AllowedMentions(users=True),
                         )
                     else:
                         await interaction.followup.send(
-                            content=content,
+                            content=all_mentions,
+                            embed=room_post_embed,
                             allowed_mentions=discord.AllowedMentions(users=True),
                             ephemeral=False,
                         )
@@ -551,7 +583,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 await disable_pending_question_message(
                     interaction.client,
                     state,
-                    build_pending_question_summary(state, question_text, asker_id),
+                    build_pending_question_summary_embed(state, question_text, asker_id),
                 )
                 await interaction.followup.send("Question posted in a thread.", ephemeral=True)
                 return
@@ -579,7 +611,8 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                     if channel is not None and state.prompt_message_id is not None:
                         try:
                             await channel.get_partial_message(state.prompt_message_id).edit(
-                                content=build_pending_prompt_content(state),
+                                content=format_mention_list(collect_prompt_mention_ids(state)),
+                                embed=build_pending_prompt_embed(state),
                                 allowed_mentions=discord.AllowedMentions(users=True),
                             )
                         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
@@ -596,7 +629,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 await disable_pending_question_message(
                     interaction.client,
                     state,
-                    build_pending_question_summary(state, question_text, asker_id),
+                    build_pending_question_summary_embed(state, question_text, asker_id),
                 )
                 await interaction.followup.send("Question sent.", ephemeral=True)
                 return
@@ -616,7 +649,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
             await disable_pending_question_message(
                 interaction.client,
                 state,
-                build_pending_question_summary(state, question_text, asker_id),
+                build_pending_question_summary_embed(state, question_text, asker_id),
             )
             target_count = len(state.participant_user_ids)
             await interaction.followup.send(
@@ -728,6 +761,20 @@ class QuestionReplyModal(discord.ui.Modal, title="Reply"):
                 return
 
             await _clear_posted_question(self.message_id)
+
+            if state.asker_id != interaction.user.id:
+                jump_url = f"https://discord.com/channels/{state.guild_id}/{state.channel_id}/{self.message_id}"
+                try:
+                    await channel.send(
+                        content=f"<@{state.asker_id}>",
+                        embed=build_reply_notification_embed(state.asker_id, jump_url),
+                        allowed_mentions=discord.AllowedMentions(
+                            users=[discord.Object(id=state.asker_id)]
+                        ),
+                    )
+                except (discord.Forbidden, discord.HTTPException):
+                    log.exception("Failed to ping asker for question reply on message %s.", self.message_id)
+
             await interaction.followup.send("Reply sent.", ephemeral=True)
 
 
@@ -780,7 +827,7 @@ async def disable_round_message(
 async def disable_pending_question_message(
     client: discord.Client,
     state: PendingQuestionState,
-    content: str,
+    embed: discord.Embed,
 ) -> None:
     if state.prompt_message_id is None:
         return
@@ -794,7 +841,7 @@ async def disable_pending_question_message(
 
     try:
         await channel.get_partial_message(state.prompt_message_id).edit(
-            content=content, view=view, allowed_mentions=discord.AllowedMentions.none()
+            content="", embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none()
         )
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         return

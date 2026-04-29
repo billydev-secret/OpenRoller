@@ -164,12 +164,13 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
     return embed
 
 
-def build_question_reply_embed(
-    state: PostedQuestionState,
-    replier_id: int,
-    reply_text: str,
-) -> discord.Embed:
-    embed = discord.Embed(title="🎲 Question", color=discord.Color(0x546E7A))
+QUESTION_EMBED_COLOR = discord.Color(0x546E7A)
+PROMPT_EMBED_COLOR = discord.Color(0x546E7A)
+NOTICE_EMBED_COLOR = discord.Color(0x546E7A)
+
+
+def build_question_post_embed(state: PostedQuestionState) -> discord.Embed:
+    embed = discord.Embed(title="🎲 Question", color=QUESTION_EMBED_COLOR)
 
     asker_label = f"<@{state.asker_id}>"
     if state.asker_rolled_100:
@@ -185,6 +186,15 @@ def build_question_reply_embed(
     embed.add_field(name="Asks", value=asker_label, inline=True)
     embed.add_field(name="Answers", value=answers_label, inline=True)
     embed.add_field(name="Question", value=f"> {state.question_text}", inline=False)
+    return embed
+
+
+def build_question_reply_embed(
+    state: PostedQuestionState,
+    replier_id: int,
+    reply_text: str,
+) -> discord.Embed:
+    embed = build_question_post_embed(state)
 
     if len(state.allowed_replier_ids) > 1:
         reply_value = f"<@{replier_id}>\n> {reply_text}"
@@ -193,6 +203,66 @@ def build_question_reply_embed(
     embed.add_field(name="Reply", value=reply_value, inline=False)
 
     return embed
+
+
+def build_pending_prompt_embed(state: PendingQuestionState) -> discord.Embed:
+    return discord.Embed(
+        title="🎲 Risky Rolls",
+        description=build_pending_prompt_content(state),
+        color=PROMPT_EMBED_COLOR,
+    )
+
+
+def build_pending_question_summary_embed(
+    state: PendingQuestionState,
+    question_text: str,
+    asker_id: int | None = None,
+) -> discord.Embed:
+    return discord.Embed(
+        title="🎲 Question",
+        description=build_pending_question_summary(state, question_text, asker_id),
+        color=QUESTION_EMBED_COLOR,
+    )
+
+
+def build_notice_embed(description: str, *, title: str = "🎲 Risky Rolls") -> discord.Embed:
+    return discord.Embed(title=title, description=description, color=NOTICE_EMBED_COLOR)
+
+
+def build_reply_notification_embed(asker_id: int, jump_url: str) -> discord.Embed:
+    return discord.Embed(
+        title="🎲 Question",
+        description=f"<@{asker_id}> — your question got a [reply]({jump_url}).",
+        color=QUESTION_EMBED_COLOR,
+    )
+
+
+def collect_prompt_mention_ids(state: PendingQuestionState) -> list[int]:
+    """User IDs that should be pinged in `content` when posting the prompt embed.
+
+    Mirrors the mentions that appear in build_pending_prompt_content so notification
+    behavior is preserved when the descriptive text moves into the embed body.
+    """
+    ids: list[int] = []
+    if state.prompt_kind == PromptKind.TWO_QUESTIONERS:
+        if state.winner_id is not None:
+            ids.append(state.winner_id)
+        if state.extra_questioner_id is not None:
+            ids.append(state.extra_questioner_id)
+        ids.extend(sorted(state.participant_user_ids))
+    elif state.prompt_kind == PromptKind.DIRECT:
+        if state.winner_id is not None:
+            ids.append(state.winner_id)
+        ids.extend(sorted(state.lowest_tie_user_ids))
+        ids.extend(sorted(state.participant_user_ids))
+    else:
+        if state.winner_id is not None:
+            ids.append(state.winner_id)
+    return list(dict.fromkeys(ids))
+
+
+def format_mention_list(user_ids: list[int]) -> str:
+    return " ".join(f"<@{uid}>" for uid in user_ids)
 
 
 def build_rolloff_embed(

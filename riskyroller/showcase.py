@@ -5,10 +5,13 @@ import discord
 
 from .formatters import (
     build_embed,
-    build_pending_prompt_content,
-    build_pending_question_summary,
+    build_pending_prompt_embed,
+    build_question_post_embed,
     build_question_reply_embed,
     build_rolloff_embed,
+    collect_prompt_mention_ids,
+    format_mention_list,
+    format_user_mentions,
 )
 from .models import PendingQuestionState, PostedQuestionState, PromptKind, RiskyRollState
 from .views import QuestionReplyView, RiskyRollView, SixtyNineQuestionView
@@ -40,13 +43,19 @@ FAKE_USERS: dict[int, str] = {
 
 
 @dataclass
+class ThreadMessage:
+    content: str | None = None
+    embed: discord.Embed | None = None
+
+
+@dataclass
 class FlowItem:
     header: str
     content: str | None = None
     embeds: list[discord.Embed] = field(default_factory=list)
     view_factory: Callable[[], discord.ui.View] | None = None
     thread_name: str | None = None
-    thread_messages: list[str] = field(default_factory=list)
+    thread_messages: list[str | ThreadMessage] = field(default_factory=list)
 
 
 def _open_view() -> discord.ui.View:
@@ -118,6 +127,26 @@ def _pending(
     )
 
 
+def _posted(
+    *,
+    asker_id: int,
+    repliers: set[int],
+    question: str,
+    asker_rolled_100: bool = False,
+    target_rolled_1: bool = False,
+) -> PostedQuestionState:
+    return PostedQuestionState(
+        message_id=0,
+        channel_id=0,
+        guild_id=0,
+        asker_id=asker_id,
+        allowed_replier_ids=repliers,
+        question_text=question,
+        asker_rolled_100=asker_rolled_100,
+        target_rolled_1=target_rolled_1,
+    )
+
+
 def _open_embed(rolls: dict[int, int]) -> discord.Embed:
     return _styled(build_embed(_state(
         rolls,
@@ -131,18 +160,56 @@ def _closed_embed(rolls: dict[int, int], **extra) -> discord.Embed:
     return _styled(build_embed(_state(rolls, is_open=False, **extra)))
 
 
-def _prompt_content(
+def _prompt_pings(
     *,
     prompt_kind: PromptKind,
     winner_id: int,
     participants: set[int],
     extra_questioner_id: int | None = None,
 ) -> str:
-    return _replace_mentions_plain(build_pending_prompt_content(_pending(
+    state = _pending(
         prompt_kind=prompt_kind,
         winner_id=winner_id,
         participants=participants,
         extra_questioner_id=extra_questioner_id,
+    )
+    return _replace_mentions_plain(format_mention_list(collect_prompt_mention_ids(state)))
+
+
+def _prompt_embed(
+    *,
+    prompt_kind: PromptKind,
+    winner_id: int,
+    participants: set[int],
+    extra_questioner_id: int | None = None,
+) -> discord.Embed:
+    state = _pending(
+        prompt_kind=prompt_kind,
+        winner_id=winner_id,
+        participants=participants,
+        extra_questioner_id=extra_questioner_id,
+    )
+    return _styled(build_pending_prompt_embed(state))
+
+
+def _question_post_pings(participants: set[int]) -> str:
+    return _replace_mentions_plain(format_user_mentions(participants))
+
+
+def _question_post_embed(
+    *,
+    asker_id: int,
+    repliers: set[int],
+    question: str,
+    asker_rolled_100: bool = False,
+    target_rolled_1: bool = False,
+) -> discord.Embed:
+    return _styled(build_question_post_embed(_posted(
+        asker_id=asker_id,
+        repliers=repliers,
+        question=question,
+        asker_rolled_100=asker_rolled_100,
+        target_rolled_1=target_rolled_1,
     )))
 
 
@@ -156,36 +223,14 @@ def _reply_embed(
     asker_rolled_100: bool = False,
     target_rolled_1: bool = False,
 ) -> discord.Embed:
-    state = PostedQuestionState(
-        message_id=0,
-        channel_id=0,
-        guild_id=0,
+    state = _posted(
         asker_id=asker_id,
-        allowed_replier_ids=repliers,
-        question_text=question,
+        repliers=repliers,
+        question=question,
         asker_rolled_100=asker_rolled_100,
         target_rolled_1=target_rolled_1,
     )
     return _styled(build_question_reply_embed(state, replier_id, reply))
-
-
-def _question_summary(
-    *,
-    prompt_kind: PromptKind,
-    winner_id: int,
-    participants: set[int],
-    question: str,
-    extra_questioner_id: int | None = None,
-) -> str:
-    return _replace_mentions_plain(build_pending_question_summary(
-        _pending(
-            prompt_kind=prompt_kind,
-            winner_id=winner_id,
-            participants=participants,
-            extra_questioner_id=extra_questioner_id,
-        ),
-        question,
-    ))
 
 
 def build_showcase_messages() -> list[FlowItem]:
@@ -217,18 +262,21 @@ def build_showcase_messages() -> list[FlowItem]:
     ))
     items.append(FlowItem(
         header="Game 1 · question prompt",
-        content=_prompt_content(
+        content=_prompt_pings(
             prompt_kind=PromptKind.DIRECT, winner_id=5, participants={2},
         ),
+        embeds=[_prompt_embed(
+            prompt_kind=PromptKind.DIRECT, winner_id=5, participants={2},
+        )],
         view_factory=_ask_view,
     ))
     game1_question = "What's the worst lie you've told to get out of doing chores?"
     items.append(FlowItem(
         header="Game 1 · question asked",
-        content=_question_summary(
-            prompt_kind=PromptKind.DIRECT, winner_id=5, participants={2},
-            question=game1_question,
-        ),
+        content=_question_post_pings({2}),
+        embeds=[_question_post_embed(
+            asker_id=5, repliers={2}, question=game1_question,
+        )],
         view_factory=_reply_view,
     ))
     items.append(FlowItem(
@@ -266,18 +314,22 @@ def build_showcase_messages() -> list[FlowItem]:
     ))
     items.append(FlowItem(
         header="Game 2 · question prompt",
-        content=_prompt_content(
+        content=_prompt_pings(
             prompt_kind=PromptKind.DIRECT, winner_id=1, participants={3, 4},
         ),
+        embeds=[_prompt_embed(
+            prompt_kind=PromptKind.DIRECT, winner_id=1, participants={3, 4},
+        )],
         view_factory=_ask_view,
     ))
     game2_question = "What's something you've Googled that you'd never want anyone to see?"
     items.append(FlowItem(
         header="Game 2 · question asked",
-        content=_question_summary(
-            prompt_kind=PromptKind.DIRECT, winner_id=1, participants={3, 4},
-            question=game2_question,
-        ),
+        content=_question_post_pings({3, 4}),
+        embeds=[_question_post_embed(
+            asker_id=1, repliers={3, 4}, question=game2_question,
+            asker_rolled_100=True,
+        )],
         view_factory=_reply_view,
     ))
     items.append(FlowItem(
@@ -316,21 +368,25 @@ def build_showcase_messages() -> list[FlowItem]:
     ))
     items.append(FlowItem(
         header="Game 3 · two-questioner prompt",
-        content=_prompt_content(
+        content=_prompt_pings(
             prompt_kind=PromptKind.TWO_QUESTIONERS,
             winner_id=3, extra_questioner_id=5, participants={1},
         ),
+        embeds=[_prompt_embed(
+            prompt_kind=PromptKind.TWO_QUESTIONERS,
+            winner_id=3, extra_questioner_id=5, participants={1},
+        )],
         view_factory=_ask_view,
     ))
     game3_q1 = "Have you ever cried watching a Pixar movie? Which one?"
     game3_q2 = "Worst meal you've ever cooked for someone you wanted to impress?"
     items.append(FlowItem(
         header="Game 3 · first question asked (Bilbo)",
-        content=_question_summary(
-            prompt_kind=PromptKind.TWO_QUESTIONERS,
-            winner_id=3, extra_questioner_id=5, participants={1},
-            question=game3_q1,
-        ),
+        content=_question_post_pings({1}),
+        embeds=[_question_post_embed(
+            asker_id=3, repliers={1}, question=game3_q1,
+            target_rolled_1=True,
+        )],
         view_factory=_reply_view,
     ))
     items.append(FlowItem(
@@ -345,11 +401,11 @@ def build_showcase_messages() -> list[FlowItem]:
     ))
     items.append(FlowItem(
         header="Game 3 · second question asked (Lil Bill)",
-        content=_question_summary(
-            prompt_kind=PromptKind.TWO_QUESTIONERS,
-            winner_id=5, participants={1},
-            question=game3_q2,
-        ),
+        content=_question_post_pings({1}),
+        embeds=[_question_post_embed(
+            asker_id=5, repliers={1}, question=game3_q2,
+            target_rolled_1=True,
+        )],
         view_factory=_reply_view,
     ))
     items.append(FlowItem(
@@ -365,9 +421,7 @@ def build_showcase_messages() -> list[FlowItem]:
 
     # ── Game 4 — 69 rule (with thread) ────────────────────────────────────
     sixty_nine_question = "What's the most embarrassing nickname you've ever had?"
-    sixty_nine_targets = " ".join(
-        f"**@{name}**" for uid, name in FAKE_USERS.items() if uid != 3
-    )
+    sixty_nine_target_ids = {uid for uid in FAKE_USERS if uid != 3}
     game4_rolls = {
         1: 47, 2: 12, 3: 69, 4: 23, 5: 88, 6: 56, 7: 41, 8: 67, 9: 32, 10: 78,
         11: 54, 12: 73, 13: 26, 14: 60, 15: 39, 16: 81, 17: 45, 18: 70, 19: 33, 20: 51,
@@ -387,13 +441,23 @@ def build_showcase_messages() -> list[FlowItem]:
     ))
     items.append(FlowItem(
         header="Game 4 · 69 prompt + thread",
-        content=_prompt_content(
+        content=_prompt_pings(
             prompt_kind=PromptKind.ROOM, winner_id=3, participants=set(),
         ),
+        embeds=[_prompt_embed(
+            prompt_kind=PromptKind.ROOM, winner_id=3, participants=set(),
+        )],
         view_factory=_ask_view,
         thread_name=sixty_nine_question,
         thread_messages=[
-            f"{sixty_nine_targets}\n**@Bilbo Baggins** asks:\n{sixty_nine_question}",
+            ThreadMessage(
+                content=_question_post_pings(sixty_nine_target_ids),
+                embed=_question_post_embed(
+                    asker_id=3,
+                    repliers=sixty_nine_target_ids,
+                    question=sixty_nine_question,
+                ),
+            ),
             "**@Wild Bill**: my mom called me Sneezy on account of the allergies. fifteen years.",
             "**@Billford**: my older brother called me Bilfridge until i was twelve. i still flinch at appliance ads.",
             "**@Lil Bill**: i refuse to answer on the grounds that it could be used against me",
@@ -442,18 +506,21 @@ def build_showcase_messages() -> list[FlowItem]:
     ))
     items.append(FlowItem(
         header="Game 5 · question prompt",
-        content=_prompt_content(
+        content=_prompt_pings(
             prompt_kind=PromptKind.DIRECT, winner_id=2, participants={4},
         ),
+        embeds=[_prompt_embed(
+            prompt_kind=PromptKind.DIRECT, winner_id=2, participants={4},
+        )],
         view_factory=_ask_view,
     ))
     game5_question = "If you had to live one day on repeat for the rest of your life, which day?"
     items.append(FlowItem(
         header="Game 5 · question asked",
-        content=_question_summary(
-            prompt_kind=PromptKind.DIRECT, winner_id=2, participants={4},
-            question=game5_question,
-        ),
+        content=_question_post_pings({4}),
+        embeds=[_question_post_embed(
+            asker_id=2, repliers={4}, question=game5_question,
+        )],
         view_factory=_reply_view,
     ))
     items.append(FlowItem(
