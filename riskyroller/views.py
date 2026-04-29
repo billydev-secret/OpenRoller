@@ -120,31 +120,56 @@ async def _register_prompt(
     await app_state.store.save_pending_question(prompt_state)
 
 
-async def _register_posted_question(
+async def _register_posted_question(posted: PostedQuestionState) -> None:
+    app_state.posted_questions[posted.message_id] = posted
+    try:
+        await app_state.store.save_posted_question(posted)
+    except Exception:
+        app_state.posted_questions.pop(posted.message_id, None)
+        log.exception("Failed to persist posted question state for message %s.", posted.message_id)
+
+
+async def _clear_posted_question(message_id: int) -> None:
+    app_state.posted_questions.pop(message_id, None)
+    await app_state.store.delete_posted_question(message_id)
+
+
+async def _send_question_message(
     *,
-    message_id: int,
-    state: PendingQuestionState,
+    interaction: discord.Interaction,
+    pending: PendingQuestionState,
     asker_id: int,
     question_text: str,
     asker_rolled_100: bool,
     target_rolled_1: bool,
-) -> None:
-    posted = PostedQuestionState(
-        message_id=message_id,
-        channel_id=state.channel_id,
-        guild_id=state.guild_id,
-        asker_id=asker_id,
-        allowed_replier_ids=set(state.participant_user_ids),
-        question_text=question_text,
-        asker_rolled_100=asker_rolled_100,
-        target_rolled_1=target_rolled_1,
-    )
-    app_state.posted_questions[message_id] = posted
+) -> bool:
+    target_mentions = format_user_mentions(pending.participant_user_ids)
     try:
-        await app_state.store.save_posted_question(posted)
-    except Exception:
-        app_state.posted_questions.pop(message_id, None)
-        log.exception("Failed to persist posted question state for message %s.", message_id)
+        question_msg = await interaction.followup.send(
+            content=f"{target_mentions}\n<@{asker_id}> asks:\n{question_text}",
+            allowed_mentions=discord.AllowedMentions(users=True),
+            ephemeral=False,
+            wait=True,
+            view=QuestionReplyView(),
+        )
+    except discord.HTTPException:
+        log.exception("Failed to deliver question for game %s.", pending.game_id)
+        await interaction.followup.send("I could not send the question. Please try again.", ephemeral=True)
+        return False
+
+    await _register_posted_question(
+        PostedQuestionState(
+            message_id=question_msg.id,
+            channel_id=pending.channel_id,
+            guild_id=pending.guild_id,
+            asker_id=asker_id,
+            allowed_replier_ids=set(pending.participant_user_ids),
+            question_text=question_text,
+            asker_rolled_100=asker_rolled_100,
+            target_rolled_1=target_rolled_1,
+        )
+    )
+    return True
 
 
 def _build_main_prompt_state(game_id: str, state: RiskyRollState, resolution) -> PendingQuestionState | None:
@@ -276,7 +301,7 @@ async def _send_question_prompts_followup(
 
 
 class BaseRiskyRollView(discord.ui.View):
-    def __init__(self, game_id: str):
+    def __init__(self, game_id: str = ""):
         super().__init__(timeout=None)
         self.game_id = game_id
 
@@ -286,7 +311,10 @@ class BaseRiskyRollView(discord.ui.View):
                 item.disabled = True
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
-        log.exception("Unhandled error in %s (game %s)", type(self).__name__, self.game_id, exc_info=error)
+        if self.game_id:
+            log.exception("Unhandled error in %s (game %s)", type(self).__name__, self.game_id, exc_info=error)
+        else:
+            log.exception("Unhandled error in %s", type(self).__name__, exc_info=error)
         msg = "Something went wrong. Please try again."
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
@@ -529,26 +557,14 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 return
 
             if state.prompt_kind == PromptKind.TWO_QUESTIONERS:
-                target_mentions = format_user_mentions(state.participant_user_ids)
-                try:
-                    question_msg = await interaction.followup.send(
-                        content=f"{target_mentions}\n<@{asker_id}> asks:\n{question_text}",
-                        allowed_mentions=discord.AllowedMentions(users=True),
-                        ephemeral=False,
-                        wait=True,
-                        view=QuestionReplyView(),
-                    )
-                    await _register_posted_question(
-                        message_id=question_msg.id,
-                        state=state,
-                        asker_id=asker_id,
-                        question_text=question_text,
-                        asker_rolled_100=False,
-                        target_rolled_1=True,
-                    )
-                except discord.HTTPException:
-                    log.exception("Failed to deliver two-questioner question for game %s.", self.game_id)
-                    await interaction.followup.send("I could not send the question. Please try again.", ephemeral=True)
+                if not await _send_question_message(
+                    interaction=interaction,
+                    pending=state,
+                    asker_id=asker_id,
+                    question_text=question_text,
+                    asker_rolled_100=False,
+                    target_rolled_1=True,
+                ):
                     return
 
                 state.questioners_asked.add(asker_id)
@@ -585,29 +601,14 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 await interaction.followup.send("Question sent.", ephemeral=True)
                 return
 
-            recipient_mentions = format_user_mentions(state.participant_user_ids)
-            try:
-                question_msg = await interaction.followup.send(
-                    content=f"{recipient_mentions}\n<@{asker_id}> asks:\n{question_text}",
-                    allowed_mentions=discord.AllowedMentions(users=True),
-                    ephemeral=False,
-                    wait=True,
-                    view=QuestionReplyView(),
-                )
-                await _register_posted_question(
-                    message_id=question_msg.id,
-                    state=state,
-                    asker_id=asker_id,
-                    question_text=question_text,
-                    asker_rolled_100=len(state.participant_user_ids) > 1,
-                    target_rolled_1=False,
-                )
-            except discord.HTTPException:
-                log.exception("Failed to deliver winner question for game %s.", self.game_id)
-                await interaction.followup.send(
-                    "I could not send the question. Please try again.",
-                    ephemeral=True,
-                )
+            if not await _send_question_message(
+                interaction=interaction,
+                pending=state,
+                asker_id=asker_id,
+                question_text=question_text,
+                asker_rolled_100=len(state.participant_user_ids) > 1,
+                target_rolled_1=False,
+            ):
                 return
 
             app_state.pending_questions.pop(self.game_id, None)
@@ -713,8 +714,7 @@ class QuestionReplyModal(discord.ui.Modal, title="Reply"):
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             except discord.NotFound:
-                app_state.posted_questions.pop(self.message_id, None)
-                await app_state.store.delete_posted_question(self.message_id)
+                await _clear_posted_question(self.message_id)
                 await interaction.followup.send(
                     "The question message no longer exists.", ephemeral=True
                 )
@@ -727,16 +727,11 @@ class QuestionReplyModal(discord.ui.Modal, title="Reply"):
                 )
                 return
 
-            app_state.posted_questions.pop(self.message_id, None)
-            await app_state.store.delete_posted_question(self.message_id)
-
+            await _clear_posted_question(self.message_id)
             await interaction.followup.send("Reply sent.", ephemeral=True)
 
 
 class QuestionReplyView(BaseRiskyRollView):
-    def __init__(self):
-        super().__init__(game_id="")
-
     @discord.ui.button(
         label="Reply",
         style=discord.ButtonStyle.primary,

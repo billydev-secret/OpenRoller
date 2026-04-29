@@ -320,21 +320,23 @@ def setup(bot: "Bot") -> None:
             )
             return
 
-        await interaction.response.send_message(
-            "Posting showcase flows…",
-            ephemeral=True,
-        )
+        await interaction.response.defer(ephemeral=True)
 
         for item in build_showcase_messages():
             message_text = f"-# {item.header}"
             if item.content:
                 message_text += f"\n{item.content}"
-            sent = await interaction.followup.send(
-                content=message_text,
-                embeds=item.embeds,
-                allowed_mentions=discord.AllowedMentions.none(),
-                wait=True,
-            )
+
+            send_kwargs: dict = {
+                "content": message_text,
+                "embeds": item.embeds,
+                "allowed_mentions": discord.AllowedMentions.none(),
+                "wait": True,
+            }
+            if item.view_factory is not None:
+                send_kwargs["view"] = item.view_factory()
+
+            sent = await interaction.followup.send(**send_kwargs)
 
             if item.thread_name and sent is not None:
                 try:
@@ -357,6 +359,11 @@ def setup(bot: "Bot") -> None:
                     except (discord.Forbidden, discord.HTTPException):
                         log.exception("Showcase: failed to send thread message in %s", thread.name)
                         break
+
+        try:
+            await interaction.delete_original_response()
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
     @bot.tree.error
     async def on_app_command_error(
