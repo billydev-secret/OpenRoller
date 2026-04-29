@@ -8,7 +8,7 @@ from discord import app_commands
 from . import commands
 from . import state as app_state
 from .config import DEBUG, DEBUG_GUILD_ID, DEFAULT_MIN_GAME_SECONDS, SYNC_COMMANDS_ON_STARTUP
-from .views import RiskyRollView, SixtyNineQuestionView, schedule_auto_close
+from .views import QuestionReplyView, RiskyRollView, SixtyNineQuestionView, schedule_auto_close
 
 log = logging.getLogger(__name__)
 
@@ -25,11 +25,12 @@ class Bot(discord.Client):
         commands.setup(self)
 
         await app_state.store.initialize()
-        ping_roles, min_game_times, active_rounds, pending_questions = await asyncio.gather(
+        ping_roles, min_game_times, active_rounds, pending_questions, posted_questions = await asyncio.gather(
             app_state.store.load_ping_roles(),
             app_state.store.load_min_game_times(),
             app_state.store.load_active_rounds(),
             app_state.store.load_pending_questions(),
+            app_state.store.load_posted_questions(),
         )
         app_state.ping_roles.update(ping_roles)
         app_state.min_game_seconds.update(min_game_times)
@@ -79,6 +80,10 @@ class Bot(discord.Client):
                 )
                 await app_state.store.delete_pending_question(state.game_id)
 
+        for posted in posted_questions:
+            app_state.posted_questions[posted.message_id] = posted
+            self.add_view(QuestionReplyView(), message_id=posted.message_id)
+
         if DEBUG:
             if DEBUG_GUILD_ID is None:
                 raise RuntimeError("DEBUG is enabled but GUILD_ID is missing from the environment.")
@@ -91,23 +96,6 @@ class Bot(discord.Client):
             log.info("Synced commands globally.")
         else:
             log.info("Skipping global command sync on startup.")
-
-    async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot or message.reference is None:
-            return
-        ref_id = message.reference.message_id
-        if ref_id is None:
-            return
-        asker_id = app_state.question_messages.get(ref_id)
-        if asker_id is None or message.author.id == asker_id:
-            return
-        try:
-            await message.channel.send(
-                f"<@{asker_id}> **{message.author.display_name}** replied to your question!",
-                allowed_mentions=discord.AllowedMentions(users=True),
-            )
-        except discord.HTTPException:
-            log.exception("Failed to send question reply ping in #%s.", message.channel)
 
     async def on_ready(self) -> None:
         log.info("Bot ready in %s guild(s).", len(self.guilds))

@@ -307,14 +307,15 @@ def setup(bot: "Bot") -> None:
 
     @bot.tree.command(
         name="risky_showcase",
-        description="Post sample embeds of every game flow (for screenshots — non-functional)",
+        description="Post sample game flows for screenshots — non-functional",
     )
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(administrator=True)
     async def risky_showcase(interaction: discord.Interaction):
-        if not isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
+        if not isinstance(interaction.channel, discord.TextChannel):
             await interaction.response.send_message(
-                "This command must be used in a server text channel.",
+                "This command must be used in a regular server text channel "
+                "(not a thread) so the 69-flow thread can attach.",
                 ephemeral=True,
             )
             return
@@ -324,15 +325,38 @@ def setup(bot: "Bot") -> None:
             ephemeral=True,
         )
 
-        for header, content, embeds in build_showcase_messages():
-            message_text = f"-# {header}"
-            if content:
-                message_text += f"\n{content}"
-            await interaction.followup.send(
+        for item in build_showcase_messages():
+            message_text = f"-# {item.header}"
+            if item.content:
+                message_text += f"\n{item.content}"
+            sent = await interaction.followup.send(
                 content=message_text,
-                embeds=embeds,
+                embeds=item.embeds,
                 allowed_mentions=discord.AllowedMentions.none(),
+                wait=True,
             )
+
+            if item.thread_name and sent is not None:
+                try:
+                    thread = await sent.create_thread(
+                        name=item.thread_name[:97] + "..."
+                        if len(item.thread_name) > 97
+                        else item.thread_name,
+                        auto_archive_duration=1440,
+                    )
+                except (discord.Forbidden, discord.HTTPException):
+                    log.exception("Showcase: failed to create thread for %s", item.header)
+                    continue
+
+                for thread_message in item.thread_messages:
+                    try:
+                        await thread.send(
+                            content=thread_message,
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                    except (discord.Forbidden, discord.HTTPException):
+                        log.exception("Showcase: failed to send thread message in %s", thread.name)
+                        break
 
     @bot.tree.error
     async def on_app_command_error(

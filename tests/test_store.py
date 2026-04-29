@@ -6,7 +6,7 @@ import unittest
 import uuid
 from typing import Any
 
-from riskyroller.models import PendingQuestionState, RiskyRollState
+from riskyroller.models import PendingQuestionState, PostedQuestionState, RiskyRollState
 from riskyroller.store import StateStore
 
 
@@ -250,6 +250,89 @@ class StoreTests(unittest.TestCase):
 
         self.assertEqual(1, len(loaded))
         self.assertEqual(555, loaded[0].prompt_message_id)
+
+    # --- posted questions ---
+
+    def test_save_and_load_posted_question(self) -> None:
+        state = PostedQuestionState(
+            message_id=12345,
+            channel_id=100,
+            guild_id=200,
+            asker_id=300,
+            allowed_replier_ids={400, 500},
+            question_text="What is your favorite color?",
+            asker_rolled_100=True,
+            target_rolled_1=False,
+        )
+        run(self.store.save_posted_question(state))
+
+        loaded = run(self.store.load_posted_questions())
+
+        self.assertEqual(1, len(loaded))
+        self.assertEqual(12345, loaded[0].message_id)
+        self.assertEqual(100, loaded[0].channel_id)
+        self.assertEqual(200, loaded[0].guild_id)
+        self.assertEqual(300, loaded[0].asker_id)
+        self.assertEqual({400, 500}, loaded[0].allowed_replier_ids)
+        self.assertEqual("What is your favorite color?", loaded[0].question_text)
+        self.assertTrue(loaded[0].asker_rolled_100)
+        self.assertFalse(loaded[0].target_rolled_1)
+
+    def test_save_posted_question_preserves_target_rolled_1(self) -> None:
+        state = PostedQuestionState(
+            message_id=999,
+            channel_id=100,
+            guild_id=200,
+            asker_id=300,
+            allowed_replier_ids={400},
+            question_text="q",
+            asker_rolled_100=False,
+            target_rolled_1=True,
+        )
+        run(self.store.save_posted_question(state))
+
+        loaded = run(self.store.load_posted_questions())
+
+        self.assertFalse(loaded[0].asker_rolled_100)
+        self.assertTrue(loaded[0].target_rolled_1)
+
+    def test_save_posted_question_updates_existing(self) -> None:
+        state = PostedQuestionState(
+            message_id=12345,
+            channel_id=100,
+            guild_id=200,
+            asker_id=300,
+            allowed_replier_ids={400},
+            question_text="original",
+        )
+        run(self.store.save_posted_question(state))
+
+        state.question_text = "updated"
+        state.allowed_replier_ids = {400, 500}
+        run(self.store.save_posted_question(state))
+
+        loaded = run(self.store.load_posted_questions())
+
+        self.assertEqual(1, len(loaded))
+        self.assertEqual("updated", loaded[0].question_text)
+        self.assertEqual({400, 500}, loaded[0].allowed_replier_ids)
+
+    def test_delete_posted_question_removes_row(self) -> None:
+        state = PostedQuestionState(
+            message_id=12345,
+            channel_id=100,
+            guild_id=200,
+            asker_id=300,
+            allowed_replier_ids={400},
+            question_text="q",
+        )
+        run(self.store.save_posted_question(state))
+        run(self.store.delete_posted_question(12345))
+
+        self.assertEqual([], run(self.store.load_posted_questions()))
+
+    def test_delete_nonexistent_posted_question_is_safe(self) -> None:
+        run(self.store.delete_posted_question(999))  # Should not raise
 
     # --- ping roles ---
 

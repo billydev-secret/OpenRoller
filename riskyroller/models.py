@@ -214,3 +214,15 @@ class PendingQuestionState:
         if self.extra_questioner_id is not None:
             ids.add(self.extra_questioner_id)
         return ids
+
+
+@dataclass
+class PostedQuestionState:
+    message_id: int
+    channel_id: int
+    guild_id: int
+    asker_id: int
+    allowed_replier_ids: set[int]
+    question_text: str
+    asker_rolled_100: bool = False
+    target_rolled_1: bool = False

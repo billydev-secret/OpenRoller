@@ -2,7 +2,7 @@ import logging
 
 import discord
 
-from .models import PendingQuestionState, PromptKind, RiskyRollState
+from .models import PendingQuestionState, PostedQuestionState, PromptKind, RiskyRollState
 
 log = logging.getLogger(__name__)
 
@@ -160,6 +160,37 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
                 result += "\n*Both the 100 and 1 rules apply.*"
 
         embed.add_field(name="Result", value=result, inline=False)
+
+    return embed
+
+
+def build_question_reply_embed(
+    state: PostedQuestionState,
+    replier_id: int,
+    reply_text: str,
+) -> discord.Embed:
+    embed = discord.Embed(title="🎲 Question", color=discord.Color(0x546E7A))
+
+    asker_label = f"<@{state.asker_id}>"
+    if state.asker_rolled_100:
+        asker_label += " ⭐"
+
+    target_ids = sorted(state.allowed_replier_ids)
+    if state.target_rolled_1:
+        target_parts = [f"<@{tid}> ☠️" for tid in target_ids]
+    else:
+        target_parts = [f"<@{tid}>" for tid in target_ids]
+    answers_label = " and ".join(target_parts)
+
+    embed.add_field(name="Asks", value=asker_label, inline=True)
+    embed.add_field(name="Answers", value=answers_label, inline=True)
+    embed.add_field(name="Question", value=f"> {state.question_text}", inline=False)
+
+    if len(state.allowed_replier_ids) > 1:
+        reply_value = f"<@{replier_id}>\n> {reply_text}"
+    else:
+        reply_value = f"> {reply_text}"
+    embed.add_field(name="Reply", value=reply_value, inline=False)
 
     return embed
 

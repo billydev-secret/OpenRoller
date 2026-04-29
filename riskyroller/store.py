@@ -4,7 +4,7 @@ import sqlite3
 import time
 
 from .logic import deserialize_user_ids, serialize_user_ids
-from .models import PendingQuestionState, PromptKind, RiskyRollState
+from .models import PendingQuestionState, PostedQuestionState, PromptKind, RiskyRollState
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +108,17 @@ class StateStore:
                     prompt_kind TEXT NOT NULL DEFAULT 'room',
                     extra_questioner_id INTEGER,
                     questioners_asked TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS posted_questions (
+                    message_id INTEGER PRIMARY KEY,
+                    channel_id INTEGER NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    asker_id INTEGER NOT NULL,
+                    allowed_replier_ids TEXT NOT NULL,
+                    question_text TEXT NOT NULL,
+                    asker_rolled_100 INTEGER NOT NULL DEFAULT 0,
+                    target_rolled_1 INTEGER NOT NULL DEFAULT 0
                 );
                 """
             )
@@ -399,3 +410,83 @@ class StateStore:
 
     async def load_pending_questions(self) -> list[PendingQuestionState]:
         return await asyncio.to_thread(self._load_pending_questions)
+
+    def _save_posted_question(self, state: PostedQuestionState) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO posted_questions (
+                    message_id,
+                    channel_id,
+                    guild_id,
+                    asker_id,
+                    allowed_replier_ids,
+                    question_text,
+                    asker_rolled_100,
+                    target_rolled_1
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    channel_id = excluded.channel_id,
+                    guild_id = excluded.guild_id,
+                    asker_id = excluded.asker_id,
+                    allowed_replier_ids = excluded.allowed_replier_ids,
+                    question_text = excluded.question_text,
+                    asker_rolled_100 = excluded.asker_rolled_100,
+                    target_rolled_1 = excluded.target_rolled_1
+                """,
+                (
+                    state.message_id,
+                    state.channel_id,
+                    state.guild_id,
+                    state.asker_id,
+                    serialize_user_ids(state.allowed_replier_ids),
+                    state.question_text,
+                    int(state.asker_rolled_100),
+                    int(state.target_rolled_1),
+                ),
+            )
+
+    async def save_posted_question(self, state: PostedQuestionState) -> None:
+        await asyncio.to_thread(self._save_posted_question, state)
+
+    def _delete_posted_question(self, message_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM posted_questions WHERE message_id = ?", (message_id,))
+
+    async def delete_posted_question(self, message_id: int) -> None:
+        await asyncio.to_thread(self._delete_posted_question, message_id)
+
+    def _load_posted_questions(self) -> list[PostedQuestionState]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    message_id,
+                    channel_id,
+                    guild_id,
+                    asker_id,
+                    allowed_replier_ids,
+                    question_text,
+                    asker_rolled_100,
+                    target_rolled_1
+                FROM posted_questions
+                """
+            ).fetchall()
+
+        return [
+            PostedQuestionState(
+                message_id=int(row["message_id"]),
+                channel_id=int(row["channel_id"]),
+                guild_id=int(row["guild_id"]),
+                asker_id=int(row["asker_id"]),
+                allowed_replier_ids=deserialize_user_ids(row["allowed_replier_ids"]),
+                question_text=str(row["question_text"]),
+                asker_rolled_100=bool(row["asker_rolled_100"]),
+                target_rolled_1=bool(row["target_rolled_1"]),
+            )
+            for row in rows
+        ]
+
+    async def load_posted_questions(self) -> list[PostedQuestionState]:
+        return await asyncio.to_thread(self._load_posted_questions)

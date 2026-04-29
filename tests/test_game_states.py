@@ -6,11 +6,13 @@ from riskyroller.formatters import (
     build_embed,
     build_pending_prompt_content,
     build_pending_question_summary,
+    build_question_reply_embed,
     build_rolloff_embed,
 )
 from riskyroller.logic import run_tie_rolloff
 from riskyroller.models import (
     PendingQuestionState,
+    PostedQuestionState,
     ResolutionResult,
     RiskyRollState,
     RoundResult,
@@ -392,6 +394,65 @@ class GameStatePresentationTests(unittest.TestCase):
         self.assertEqual("Rolloff Round 2", embed.fields[1].name)
         self.assertEqual("Rolloff Winner", embed.fields[2].name)
         self.assertEqual("<@1>", embed.fields[2].value)
+
+
+class QuestionReplyEmbedTests(unittest.TestCase):
+    def make_state(self, **overrides) -> PostedQuestionState:
+        defaults = dict(
+            message_id=12345,
+            channel_id=100,
+            guild_id=200,
+            asker_id=10,
+            allowed_replier_ids={20},
+            question_text="What is your favorite color?",
+        )
+        defaults.update(overrides)
+        return PostedQuestionState(**defaults)  # type: ignore[arg-type]
+
+    def _field(self, embed, name):
+        for field in embed.fields:
+            if field.name == name:
+                return field
+        self.fail(f"Field {name!r} not found in embed")
+
+    def test_standard_case_no_special_markers(self) -> None:
+        state = self.make_state()
+
+        embed = build_question_reply_embed(state, replier_id=20, reply_text="Blue.")
+
+        self.assertEqual("🎲 Question", embed.title)
+        self.assertEqual("<@10>", self._field(embed, "Asks").value)
+        self.assertEqual("<@20>", self._field(embed, "Answers").value)
+        self.assertEqual("> What is your favorite color?", self._field(embed, "Question").value)
+        self.assertEqual("> Blue.", self._field(embed, "Reply").value)
+
+    def test_100_case_shows_star_on_asker_and_both_targets(self) -> None:
+        state = self.make_state(
+            allowed_replier_ids={20, 30},
+            asker_rolled_100=True,
+        )
+
+        embed = build_question_reply_embed(state, replier_id=20, reply_text="Blue.")
+
+        self.assertEqual("<@10> ⭐", self._field(embed, "Asks").value)
+        self.assertEqual("<@20> and <@30>", self._field(embed, "Answers").value)
+        self.assertEqual("<@20>\n> Blue.", self._field(embed, "Reply").value)
+
+    def test_1_case_shows_skull_on_target(self) -> None:
+        state = self.make_state(target_rolled_1=True)
+
+        embed = build_question_reply_embed(state, replier_id=20, reply_text="Red.")
+
+        self.assertEqual("<@10>", self._field(embed, "Asks").value)
+        self.assertEqual("<@20> ☠️", self._field(embed, "Answers").value)
+        self.assertEqual("> Red.", self._field(embed, "Reply").value)
+
+    def test_single_target_reply_does_not_prepend_replier_mention(self) -> None:
+        state = self.make_state()
+
+        embed = build_question_reply_embed(state, replier_id=20, reply_text="Hi.")
+
+        self.assertEqual("> Hi.", self._field(embed, "Reply").value)
 
 
 if __name__ == "__main__":
