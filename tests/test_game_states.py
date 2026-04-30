@@ -3,7 +3,9 @@ import uuid
 from unittest.mock import patch
 
 from riskyroller.formatters import (
+    NOTICE_EMBED_COLOR,
     build_embed,
+    build_how_to_play_embed,
     build_pending_prompt_content,
     build_pending_question_summary,
     build_question_reply_embed,
@@ -453,6 +455,27 @@ class QuestionReplyEmbedTests(unittest.TestCase):
         embed = build_question_reply_embed(state, replier_id=20, reply_text="Hi.")
 
         self.assertEqual("> Hi.", self._field(embed, "Reply").value)
+
+
+class HowToPlayEmbedTests(unittest.TestCase):
+    def test_title_mentions_how_to_play(self) -> None:
+        embed = build_how_to_play_embed()
+
+        self.assertIn("How to Play", embed.title)
+
+    def test_description_covers_core_rules(self) -> None:
+        embed = build_how_to_play_embed()
+
+        description = embed.description or ""
+        self.assertIn("Roll", description)
+        self.assertIn("69", description)
+        self.assertIn("100", description)
+        self.assertIn("Rolled 1", description)
+
+    def test_uses_notice_embed_color(self) -> None:
+        embed = build_how_to_play_embed()
+
+        self.assertEqual(NOTICE_EMBED_COLOR, embed.color)
 
 
 if __name__ == "__main__":

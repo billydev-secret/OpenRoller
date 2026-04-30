@@ -229,6 +229,20 @@ def build_notice_embed(description: str, *, title: str = "🎲 Risky Rolls") -> 
     return discord.Embed(title=title, description=description, color=NOTICE_EMBED_COLOR)
 
 
+def build_how_to_play_embed() -> discord.Embed:
+    description = (
+        "**Roll** — Each player presses **Roll** once. You roll a number from **1** to **100**.\n"
+        "**Win** — Highest unique roll wins the round; lowest roll is the loser.\n"
+        "**Ties for highest** — Tied players auto-reroll until one wins.\n"
+        "**Question** — The winner asks the loser a question; the loser must reply.\n"
+        "🔥 **Rolled 69** — The winner asks the whole room (in a thread).\n"
+        "⭐ **Rolled 100** — The winner asks the bottom 2 players.\n"
+        "☠️ **Rolled 1** — The top 2 players each ask the loser.\n"
+        "**Close** — Only the round opener (or an admin) can close early."
+    )
+    return discord.Embed(title="🎲 How to Play", description=description, color=NOTICE_EMBED_COLOR)
+
+
 def build_reply_notification_embed(asker_id: int, jump_url: str) -> discord.Embed:
     return discord.Embed(
         title="🎲 Question",

@@ -10,6 +10,7 @@ from . import state as app_state
 from .config import DEFAULT_MIN_GAME_SECONDS
 from .formatters import (
     build_embed,
+    build_how_to_play_embed,
     build_notice_embed,
     build_pending_prompt_embed,
     build_pending_question_summary_embed,
@@ -387,6 +388,18 @@ class RiskyRollView(BaseRiskyRollView):
                 app_state.auto_close_tasks[self.game_id] = asyncio.create_task(
                     schedule_auto_close(interaction.client, self.game_id, delay)
                 )
+
+    @discord.ui.button(
+        label="How to Play",
+        style=discord.ButtonStyle.secondary,
+        custom_id="riskyroller:how_to_play",
+        emoji="❓",
+    )
+    async def how_to_play_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            embed=build_how_to_play_embed(),
+            ephemeral=True,
+        )
 
     @discord.ui.button(
         label="Close Round",
