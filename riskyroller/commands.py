@@ -240,8 +240,12 @@ def setup(bot: "Bot") -> None:
                 gid for gid, s in app_state.pending_questions.items()
                 if s.channel_id == channel_id
             ]
+            posted_message_ids = [
+                mid for mid, s in app_state.posted_questions.items()
+                if s.channel_id == channel_id
+            ]
 
-            if not game_ids and not question_ids:
+            if not game_ids and not question_ids and not posted_message_ids:
                 await interaction.response.send_message(
                     "No active or pending Risky Rolls state was found in this channel.",
                     ephemeral=True,
@@ -268,6 +272,10 @@ def setup(bot: "Bot") -> None:
                     )
                 await app_state.store.delete_pending_question(game_id)
 
+            for message_id in posted_message_ids:
+                app_state.posted_questions.pop(message_id, None)
+                await app_state.store.delete_posted_question(message_id)
+
             await interaction.response.send_message(
                 "Reset the Risky Rolls state for this channel.",
                 ephemeral=True,
@@ -287,6 +295,8 @@ def setup(bot: "Bot") -> None:
             permissions=discord.Permissions(
                 send_messages=True,
                 embed_links=True,
+                create_public_threads=True,
+                send_messages_in_threads=True,
             ),
             scopes=["bot", "applications.commands"],
         )

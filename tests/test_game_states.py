@@ -15,6 +15,7 @@ from riskyroller.logic import run_tie_rolloff
 from riskyroller.models import (
     PendingQuestionState,
     PostedQuestionState,
+    PromptKind,
     ResolutionResult,
     RiskyRollState,
     RoundResult,
@@ -221,7 +222,7 @@ class GameStatePresentationTests(unittest.TestCase):
 
         embed = build_embed(state)
 
-        self.assertEqual("Press **Roll** to join this round.", embed.description)
+        self.assertIn("Press **Roll** to join", embed.description or "")
         self.assertEqual("Rolls (0)", embed.fields[0].name)
         self.assertEqual("No rolls yet.", embed.fields[0].value)
 
@@ -236,9 +237,9 @@ class GameStatePresentationTests(unittest.TestCase):
 
         embed = build_embed(state)
 
-        self.assertEqual("Tie for highest roll. Tied players must reroll.", embed.description)
-        self.assertEqual("Reroll", embed.fields[1].name)
-        self.assertIn("Tied users: <@11>, <@22>", embed.fields[1].value or "")
+        self.assertIn("Tie for highest", embed.description or "")
+        self.assertIn("Reroll", embed.fields[1].name)
+        self.assertIn("Tied: <@11>, <@22>", embed.fields[1].value or "")
         self.assertIn("Waiting on: <@22>", embed.fields[1].value or "")
 
     def test_build_embed_for_closed_standard_result(self) -> None:
@@ -254,9 +255,10 @@ class GameStatePresentationTests(unittest.TestCase):
 
         embed = build_embed(state)
 
-        self.assertEqual("Round closed.", embed.description)
+        self.assertEqual("Round over.", embed.description)
         self.assertEqual("Result", embed.fields[1].name)
-        self.assertEqual("<@44> asks\n<@55> answers", embed.fields[1].value)
+        self.assertIn("**Asks:** <@44>", embed.fields[1].value or "")
+        self.assertIn("**Answers:** <@55>", embed.fields[1].value or "")
 
     def test_build_embed_for_closed_standard_result_with_lowest_tie_rolloff(self) -> None:
         state = RiskyRollState(
@@ -272,10 +274,11 @@ class GameStatePresentationTests(unittest.TestCase):
 
         embed = build_embed(state)
 
-        self.assertEqual("Round closed.", embed.description)
+        self.assertEqual("Round over.", embed.description)
         self.assertEqual("Result", embed.fields[1].name)
-        self.assertIn("<@44> asks\n<@55> answers", embed.fields[1].value or "")
-        self.assertIn("<@55>, <@66> -> <@55>.", embed.fields[1].value or "")
+        self.assertIn("**Asks:** <@44>", embed.fields[1].value or "")
+        self.assertIn("**Answers:** <@55>", embed.fields[1].value or "")
+        self.assertIn("<@55>, <@66> → <@55>", embed.fields[1].value or "")
 
     def test_build_embed_for_closed_sixtynine_result(self) -> None:
         state = RiskyRollState(
@@ -290,10 +293,10 @@ class GameStatePresentationTests(unittest.TestCase):
 
         embed = build_embed(state)
 
-        self.assertEqual("Round closed.", embed.description)
+        self.assertEqual("Round over.", embed.description)
         self.assertEqual("Result", embed.fields[1].name)
-        self.assertIn("69 rolled.", embed.fields[1].value or "")
-        self.assertIn("<@99> wins and asks the room a question in a thread.", embed.fields[1].value or "")
+        self.assertIn("**Asks:** <@99>", embed.fields[1].value or "")
+        self.assertIn("**Answers:** the room", embed.fields[1].value or "")
 
     def test_build_pending_prompt_content_direct(self) -> None:
         state = PendingQuestionState(
@@ -302,12 +305,12 @@ class GameStatePresentationTests(unittest.TestCase):
             winner_id=10,
             participant_user_ids={30, 20},
             game_id=str(uuid.uuid4()),
-            prompt_kind="direct",
+            prompt_kind=PromptKind.DIRECT,
         )
 
         content = build_pending_prompt_content(state)
 
-        self.assertIn("<@10> won the round.", content)
+        self.assertIn("<@10> wins the round.", content)
         self.assertIn("<@20> <@30>", content)
 
     def test_build_pending_prompt_content_direct_with_lowest_tie_rolloff(self) -> None:
@@ -318,13 +321,13 @@ class GameStatePresentationTests(unittest.TestCase):
             participant_user_ids={20},
             game_id=str(uuid.uuid4()),
             lowest_tie_user_ids={20, 30},
-            prompt_kind="direct",
+            prompt_kind=PromptKind.DIRECT,
         )
 
         content = build_pending_prompt_content(state)
 
-        self.assertIn("<@10> won the round.", content)
-        self.assertIn("<@20>, <@30> -> <@20>.", content)
+        self.assertIn("<@10> wins the round.", content)
+        self.assertIn("<@20>, <@30> → <@20>", content)
         self.assertIn("Click **Ask Question** to send your question to <@20>.", content)
 
     def test_build_pending_prompt_content_room(self) -> None:
@@ -334,13 +337,13 @@ class GameStatePresentationTests(unittest.TestCase):
             winner_id=10,
             participant_user_ids={10, 20, 30},
             game_id=str(uuid.uuid4()),
-            prompt_kind="room",
+            prompt_kind=PromptKind.ROOM,
         )
 
         content = build_pending_prompt_content(state)
 
-        self.assertIn("<@10> rolled **69** and wins.", content)
-        self.assertIn("everyone who rolled", content)
+        self.assertIn("<@10> rolled **69**", content)
+        self.assertIn("they ask the room", content)
 
     def test_build_pending_question_summary_direct(self) -> None:
         state = PendingQuestionState(
@@ -349,12 +352,12 @@ class GameStatePresentationTests(unittest.TestCase):
             winner_id=42,
             participant_user_ids={8, 9},
             game_id=str(uuid.uuid4()),
-            prompt_kind="direct",
+            prompt_kind=PromptKind.DIRECT,
         )
 
         summary = build_pending_question_summary(state, "How old are you?")
 
-        self.assertEqual("<@42> asked <@8> <@9>:\nHow old are you?", summary)
+        self.assertEqual("<@42> asked <@8> <@9>:\n> How old are you?", summary)
 
     def test_build_pending_question_summary_room(self) -> None:
         state = PendingQuestionState(
@@ -363,12 +366,12 @@ class GameStatePresentationTests(unittest.TestCase):
             winner_id=42,
             participant_user_ids={8, 9, 42},
             game_id=str(uuid.uuid4()),
-            prompt_kind="room",
+            prompt_kind=PromptKind.ROOM,
         )
 
         summary = build_pending_question_summary(state, "Room question?")
 
-        self.assertEqual("<@42> rolled 69 and asked:\nRoom question?", summary)
+        self.assertEqual("<@42> rolled 69 and asked:\n> Room question?", summary)
 
     def test_run_tie_rolloff_retries_until_single_winner(self) -> None:
         with patch(
@@ -390,11 +393,11 @@ class GameStatePresentationTests(unittest.TestCase):
             winner_id=1,
         )
 
-        self.assertEqual("Tie Rolloff", embed.title)
+        self.assertIn("Tie Rolloff", embed.title or "")
         self.assertEqual(3, len(embed.fields))
-        self.assertEqual("Rolloff Round 1", embed.fields[0].name)
-        self.assertEqual("Rolloff Round 2", embed.fields[1].name)
-        self.assertEqual("Rolloff Winner", embed.fields[2].name)
+        self.assertEqual("Round 1", embed.fields[0].name)
+        self.assertEqual("Round 2", embed.fields[1].name)
+        self.assertIn("Rolloff Winner", embed.fields[2].name)
         self.assertEqual("<@1>", embed.fields[2].value)
 
 

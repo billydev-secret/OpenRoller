@@ -14,6 +14,8 @@ log = logging.getLogger(__name__)
 
 intents = discord.Intents.default()
 
+POSTED_QUESTION_TTL_SECONDS = 7 * 24 * 60 * 60
+
 
 class Bot(discord.Client):
     def __init__(self):
@@ -25,6 +27,9 @@ class Bot(discord.Client):
         commands.setup(self)
 
         await app_state.store.initialize()
+        swept = await app_state.store.sweep_old_posted_questions(POSTED_QUESTION_TTL_SECONDS)
+        if swept:
+            log.info("Swept %d posted_questions older than %d days.", swept, POSTED_QUESTION_TTL_SECONDS // 86400)
         ping_roles, min_game_times, active_rounds, pending_questions, posted_questions = await asyncio.gather(
             app_state.store.load_ping_roles(),
             app_state.store.load_min_game_times(),
@@ -99,6 +104,30 @@ class Bot(discord.Client):
 
     async def on_ready(self) -> None:
         log.info("Bot ready in %s guild(s).", len(self.guilds))
+
+    async def on_guild_remove(self, guild: discord.Guild) -> None:
+        guild_id = guild.id
+        log.info("Removed from guild %s; clearing all stored state.", guild_id)
+
+        app_state.ping_roles.pop(guild_id, None)
+        app_state.min_game_seconds.pop(guild_id, None)
+
+        for game_id in [gid for gid, s in app_state.active_games.items() if s.guild_id == guild_id]:
+            task = app_state.auto_close_tasks.pop(game_id, None)
+            if task:
+                task.cancel()
+            app_state.active_games.pop(game_id, None)
+
+        for game_id in [gid for gid, s in app_state.pending_questions.items() if s.guild_id == guild_id]:
+            app_state.pending_questions.pop(game_id, None)
+
+        for message_id in [mid for mid, s in app_state.posted_questions.items() if s.guild_id == guild_id]:
+            app_state.posted_questions.pop(message_id, None)
+
+        try:
+            await app_state.store.delete_guild_data(guild_id)
+        except Exception:
+            log.exception("Failed to delete stored data for guild %s.", guild_id)
 
 
 bot = Bot()

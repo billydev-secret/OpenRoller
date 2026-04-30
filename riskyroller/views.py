@@ -152,6 +152,7 @@ async def _send_question_message(
     target_rolled_1: bool,
 ) -> bool:
     target_mentions = format_user_mentions(pending.participant_user_ids)
+    allowed_user_ids = {asker_id, *pending.participant_user_ids}
     posted = PostedQuestionState(
         message_id=0,
         channel_id=pending.channel_id,
@@ -166,7 +167,11 @@ async def _send_question_message(
         question_msg = await interaction.followup.send(
             content=target_mentions,
             embed=build_question_post_embed(posted),
-            allowed_mentions=discord.AllowedMentions(users=True),
+            allowed_mentions=discord.AllowedMentions(
+                users=[discord.Object(id=uid) for uid in allowed_user_ids],
+                everyone=False,
+                roles=False,
+            ),
             ephemeral=False,
             wait=True,
             view=QuestionReplyView(),
@@ -224,10 +229,15 @@ def _build_one_rule_prompt_state(game_id: str, state: RiskyRollState) -> Pending
 
 
 async def _send_and_register_prompt(send_fn, game_id: str, prompt_state: PendingQuestionState):
+    mention_ids = collect_prompt_mention_ids(prompt_state)
     message = await send_fn(
-        content=format_mention_list(collect_prompt_mention_ids(prompt_state)),
+        content=format_mention_list(mention_ids),
         embed=build_pending_prompt_embed(prompt_state),
-        allowed_mentions=discord.AllowedMentions(users=True),
+        allowed_mentions=discord.AllowedMentions(
+            users=[discord.Object(id=uid) for uid in mention_ids],
+            everyone=False,
+            roles=False,
+        ),
         view=SixtyNineQuestionView(game_id),
     )
     try:
@@ -436,9 +446,14 @@ class RiskyRollView(BaseRiskyRollView):
             resolution = state.resolve()
 
             if resolution.result_type == RoundResult.WAITING_FOR_REROLLS:
+                pending_ids = [uid for uid in state.reroll_user_ids if uid not in state.rolls]
                 await interaction.response.send_message(
                     f"Still waiting for {state.pending_reroll_mentions()} to reroll.",
-                    allowed_mentions=discord.AllowedMentions(users=True),
+                    allowed_mentions=discord.AllowedMentions(
+                        users=[discord.Object(id=uid) for uid in pending_ids],
+                        everyone=False,
+                        roles=False,
+                    ),
                     ephemeral=True,
                 )
                 return
@@ -561,6 +576,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                     thread = None
 
                 all_mentions = format_user_mentions(state.participant_user_ids)
+                allowed_user_ids = {asker_id, *state.participant_user_ids}
                 room_post_embed = build_question_post_embed(
                     PostedQuestionState(
                         message_id=0,
@@ -571,19 +587,24 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                         question_text=question_text,
                     )
                 )
+                room_allowed_mentions = discord.AllowedMentions(
+                    users=[discord.Object(id=uid) for uid in allowed_user_ids],
+                    everyone=False,
+                    roles=False,
+                )
 
                 try:
                     if thread is not None:
                         await thread.send(
                             content=all_mentions,
                             embed=room_post_embed,
-                            allowed_mentions=discord.AllowedMentions(users=True),
+                            allowed_mentions=room_allowed_mentions,
                         )
                     else:
                         await interaction.followup.send(
                             content=all_mentions,
                             embed=room_post_embed,
-                            allowed_mentions=discord.AllowedMentions(users=True),
+                            allowed_mentions=room_allowed_mentions,
                             ephemeral=False,
                         )
                 except discord.HTTPException:
@@ -622,11 +643,16 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                     )
                     channel = await get_text_channel(interaction.client, state.channel_id)
                     if channel is not None and state.prompt_message_id is not None:
+                        prompt_mention_ids = collect_prompt_mention_ids(state)
                         try:
                             await channel.get_partial_message(state.prompt_message_id).edit(
-                                content=format_mention_list(collect_prompt_mention_ids(state)),
+                                content=format_mention_list(prompt_mention_ids),
                                 embed=build_pending_prompt_embed(state),
-                                allowed_mentions=discord.AllowedMentions(users=True),
+                                allowed_mentions=discord.AllowedMentions(
+                                    users=[discord.Object(id=uid) for uid in prompt_mention_ids],
+                                    everyone=False,
+                                    roles=False,
+                                ),
                             )
                         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                             pass

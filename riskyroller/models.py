@@ -226,3 +226,4 @@ class PostedQuestionState:
     question_text: str
     asker_rolled_100: bool = False
     target_rolled_1: bool = False
+    created_at: float = field(default_factory=time.time)

@@ -40,9 +40,14 @@
 
 | Command | Description | Permissions |
 |---|---|---|
-| `/risky_start` | Open a new Risky Rolls round in the current channel. | Server members |
+| `/risky_start` | Open a new Risky Rolls round (pings the configured role). | Server members |
+| `/risky_start_no_ping` | Open a new round without pinging and without a minimum game time. | Server members |
 | `/risky_set_ping <role>` | Set the role pinged when a new round starts. | Administrator |
-| `/risky_reset_state` | Clear active round and pending prompts in the current channel. | Administrator |
+| `/risky_set_min_game_time <seconds>` | Set the minimum time before a round can be manually closed (0 disables). | Administrator |
+| `/risky_reset_state` | Clear active rounds and pending prompts in the current channel. | Administrator |
+| `/risky_showcase` | Post sample game flows for screenshots — non-functional. | Administrator |
+| `/invite` | Get an invite link to add the bot to your server. | Anyone |
+| `/support` | Get a link to the support Discord server. | Anyone |
 
 ## Requirements
 - Python `3.10+`
@@ -52,7 +57,7 @@
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
-pip install -U discord.py python-dotenv
+pip install -r requirements.txt
 ```
 
 ## Configuration
@@ -73,7 +78,7 @@ SYNC_COMMANDS_ON_STARTUP=true
 
 ## Running
 ```bash
-python riskyroller.py
+python main.py
 ```
 
 ## Data Storage
@@ -82,8 +87,9 @@ The bot stores state in SQLite:
 - `active_rounds`
 - `round_rolls`
 - `pending_questions`
+- `posted_questions`
 
-Schema initialization and lightweight migrations run on startup.
+Schema initialization and lightweight migrations run on startup. Posted questions older than 7 days are swept on startup. When the bot is removed from a guild, all of that guild's data is deleted.
 
 ## Operational Notes
 - Slash commands are guild-only.
@@ -91,6 +97,7 @@ Schema initialization and lightweight migrations run on startup.
 - State cleanup can be forced per-channel with `/risky_reset_state`.
 
 ## Development
-- Entrypoint: `riskyroller.py`
-- Main dependencies: `discord.py`, `python-dotenv`
+- Entrypoint: `main.py`
+- Main dependencies: see `requirements.txt`
 - Logging: standard Python logging at `INFO` level by default.
+- Tests: `python -m pytest tests/`

@@ -63,6 +63,11 @@ class StateStore:
                 if "min_game_seconds" not in gs_columns:
                     conn.execute("ALTER TABLE guild_settings ADD COLUMN min_game_seconds INTEGER")
 
+            if "posted_questions" in existing_tables:
+                pq_columns = {row["name"] for row in conn.execute("PRAGMA table_info(posted_questions)").fetchall()}
+                if "created_at" not in pq_columns:
+                    conn.execute("ALTER TABLE posted_questions ADD COLUMN created_at INTEGER")
+
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS guild_settings (
@@ -118,7 +123,8 @@ class StateStore:
                     allowed_replier_ids TEXT NOT NULL,
                     question_text TEXT NOT NULL,
                     asker_rolled_100 INTEGER NOT NULL DEFAULT 0,
-                    target_rolled_1 INTEGER NOT NULL DEFAULT 0
+                    target_rolled_1 INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER
                 );
                 """
             )
@@ -423,9 +429,10 @@ class StateStore:
                     allowed_replier_ids,
                     question_text,
                     asker_rolled_100,
-                    target_rolled_1
+                    target_rolled_1,
+                    created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     channel_id = excluded.channel_id,
                     guild_id = excluded.guild_id,
@@ -444,6 +451,7 @@ class StateStore:
                     state.question_text,
                     int(state.asker_rolled_100),
                     int(state.target_rolled_1),
+                    int(state.created_at),
                 ),
             )
 
@@ -469,7 +477,8 @@ class StateStore:
                     allowed_replier_ids,
                     question_text,
                     asker_rolled_100,
-                    target_rolled_1
+                    target_rolled_1,
+                    created_at
                 FROM posted_questions
                 """
             ).fetchall()
@@ -484,9 +493,38 @@ class StateStore:
                 question_text=str(row["question_text"]),
                 asker_rolled_100=bool(row["asker_rolled_100"]),
                 target_rolled_1=bool(row["target_rolled_1"]),
+                created_at=float(row["created_at"]) if row["created_at"] is not None else time.time(),
             )
             for row in rows
         ]
 
     async def load_posted_questions(self) -> list[PostedQuestionState]:
         return await asyncio.to_thread(self._load_posted_questions)
+
+    def _delete_guild_data(self, guild_id: int) -> list[str]:
+        with self._connect() as conn:
+            game_id_rows = conn.execute(
+                "SELECT game_id FROM active_rounds WHERE guild_id = ?", (guild_id,)
+            ).fetchall()
+            game_ids = [str(row["game_id"]) for row in game_id_rows]
+
+            conn.execute("DELETE FROM active_rounds WHERE guild_id = ?", (guild_id,))
+            conn.execute("DELETE FROM pending_questions WHERE guild_id = ?", (guild_id,))
+            conn.execute("DELETE FROM posted_questions WHERE guild_id = ?", (guild_id,))
+            conn.execute("DELETE FROM guild_settings WHERE guild_id = ?", (guild_id,))
+        return game_ids
+
+    async def delete_guild_data(self, guild_id: int) -> list[str]:
+        return await asyncio.to_thread(self._delete_guild_data, guild_id)
+
+    def _sweep_old_posted_questions(self, max_age_seconds: int) -> int:
+        cutoff = int(time.time()) - max_age_seconds
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM posted_questions WHERE created_at IS NOT NULL AND created_at < ?",
+                (cutoff,),
+            )
+            return cursor.rowcount or 0
+
+    async def sweep_old_posted_questions(self, max_age_seconds: int) -> int:
+        return await asyncio.to_thread(self._sweep_old_posted_questions, max_age_seconds)
