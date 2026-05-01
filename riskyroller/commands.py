@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 
 from . import state as app_state
-from .formatters import build_embed, build_notice_embed
+from .formatters import build_embed
 from .models import RiskyRollState
 from .store import MAX_GAMES_PER_CHANNEL
 from .showcase import ThreadMessage, build_showcase_messages
@@ -268,7 +268,7 @@ def setup(bot: "Bot") -> None:
                     await disable_pending_question_message(
                         interaction.client,
                         pending_state,
-                        build_notice_embed("The pending question prompt was cleared by an administrator."),
+                        "The pending question prompt was cleared by an administrator.",
                     )
                 await app_state.store.delete_pending_question(game_id)
 

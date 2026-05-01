@@ -311,12 +311,20 @@ async def get_text_channel(
     if channel is None:
         try:
             channel = await client.fetch_channel(channel_id)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        except discord.NotFound:
+            log.warning("get_text_channel: channel %s not found.", channel_id)
+            return None
+        except discord.Forbidden:
+            log.warning("get_text_channel: forbidden fetching channel %s.", channel_id)
+            return None
+        except discord.HTTPException:
+            log.warning("get_text_channel: HTTP error fetching channel %s.", channel_id, exc_info=True)
             return None
 
     if isinstance(channel, (discord.TextChannel, discord.Thread)):
         return channel
 
+    log.warning("get_text_channel: channel %s is type %s, not a TextChannel or Thread.", channel_id, type(channel).__name__)
     return None
 
 
