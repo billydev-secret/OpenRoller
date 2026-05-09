@@ -9,7 +9,6 @@ from . import state as app_state
 from .formatters import build_embed
 from .models import RiskyRollState
 from .store import MAX_GAMES_PER_CHANNEL
-from .showcase import ThreadMessage, build_showcase_messages
 from .views import RiskyRollView, disable_pending_question_message, disable_round_message, schedule_auto_close
 
 if TYPE_CHECKING:
@@ -314,74 +313,6 @@ def setup(bot: "Bot") -> None:
             "[Join the Risky Rolls support server](https://discord.gg/7gfbYYkH)",
             ephemeral=True,
         )
-
-    @bot.tree.command(
-        name="risky_showcase",
-        description="Post sample game flows for screenshots — non-functional",
-    )
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
-    async def risky_showcase(interaction: discord.Interaction):
-        if not isinstance(interaction.channel, discord.TextChannel):
-            await interaction.response.send_message(
-                "This command must be used in a regular server text channel "
-                "(not a thread) so the 69-flow thread can attach.",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.defer(ephemeral=True)
-
-        for item in build_showcase_messages():
-            message_text = f"-# {item.header}"
-            if item.content:
-                message_text += f"\n{item.content}"
-
-            send_kwargs: dict = {
-                "content": message_text,
-                "embeds": item.embeds,
-                "allowed_mentions": discord.AllowedMentions.none(),
-                "wait": True,
-            }
-            if item.view_factory is not None:
-                send_kwargs["view"] = item.view_factory()
-
-            sent = await interaction.followup.send(**send_kwargs)
-
-            if item.thread_name and sent is not None:
-                try:
-                    thread = await sent.create_thread(
-                        name=item.thread_name[:97] + "..."
-                        if len(item.thread_name) > 97
-                        else item.thread_name,
-                        auto_archive_duration=1440,
-                    )
-                except (discord.Forbidden, discord.HTTPException):
-                    log.exception("Showcase: failed to create thread for %s", item.header)
-                    continue
-
-                for thread_message in item.thread_messages:
-                    if isinstance(thread_message, ThreadMessage):
-                        send_kwargs = {"allowed_mentions": discord.AllowedMentions.none()}
-                        if thread_message.content is not None:
-                            send_kwargs["content"] = thread_message.content
-                        if thread_message.embed is not None:
-                            send_kwargs["embed"] = thread_message.embed
-                    else:
-                        send_kwargs = {
-                            "content": thread_message,
-                            "allowed_mentions": discord.AllowedMentions.none(),
-                        }
-                    try:
-                        await thread.send(**send_kwargs)
-                    except (discord.Forbidden, discord.HTTPException):
-                        log.exception("Showcase: failed to send thread message in %s", thread.name)
-                        break
-
-        try:
-            await interaction.delete_original_response()
-        except (discord.NotFound, discord.HTTPException):
-            pass
 
     @bot.tree.error
     async def on_app_command_error(

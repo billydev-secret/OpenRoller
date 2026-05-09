@@ -10,10 +10,10 @@ from . import state as app_state
 from .config import DEFAULT_MIN_GAME_SECONDS
 from .formatters import (
     build_embed,
-    build_how_to_play_embed,
+    build_how_to_play_content,
     build_pending_prompt_content,
     build_pending_question_summary,
-    build_question_reply_embed,
+    build_question_reply_content,
     format_user_mentions,
     get_text_channel,
 )
@@ -355,7 +355,7 @@ class RiskyRollView(BaseRiskyRollView):
     )
     async def how_to_play_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
-            embed=build_how_to_play_embed(),
+            content=build_how_to_play_content(),
             ephemeral=True,
         )
 
@@ -675,7 +675,7 @@ class QuestionReplyModal(discord.ui.Modal, title="Reply"):
 
             await interaction.response.defer(ephemeral=True)
 
-            embed = build_question_reply_embed(state, interaction.user.id, reply_text)
+            reply_content = build_question_reply_content(state, interaction.user.id, reply_text)
             channel = await get_text_channel(interaction.client, state.channel_id)
             if channel is None:
                 log.warning(
@@ -693,8 +693,8 @@ class QuestionReplyModal(discord.ui.Modal, title="Reply"):
 
             try:
                 await channel.get_partial_message(self.message_id).edit(
-                    content="",
-                    embed=embed,
+                    content=reply_content,
+                    embed=None,
                     view=None,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )

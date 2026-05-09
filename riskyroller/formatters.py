@@ -205,6 +205,15 @@ def build_question_reply_embed(
     return embed
 
 
+def build_question_reply_content(
+    state: PostedQuestionState,
+    replier_id: int,
+    reply_text: str,
+) -> str:
+    target_mentions = format_user_mentions(state.allowed_replier_ids)
+    return f"{target_mentions}\n<@{state.asker_id}> asks:\n{state.question_text}\n\n<@{replier_id}>: {reply_text}"
+
+
 def build_pending_prompt_embed(state: PendingQuestionState) -> discord.Embed:
     return discord.Embed(
         title="🎲 Risky Rolls",
@@ -227,6 +236,20 @@ def build_pending_question_summary_embed(
 
 def build_notice_embed(description: str, *, title: str = "🎲 Risky Rolls") -> discord.Embed:
     return discord.Embed(title=title, description=description, color=NOTICE_EMBED_COLOR)
+
+
+def build_how_to_play_content() -> str:
+    return (
+        "**🎲 How to Play**\n"
+        "**Roll** — Each player presses **Roll** once. You roll a number from **1** to **100**.\n"
+        "**Win** — Highest unique roll wins the round; lowest roll is the loser.\n"
+        "**Ties for highest** — Tied players auto-reroll until one wins.\n"
+        "**Question** — The winner asks the loser a question; the loser must reply.\n"
+        "🔥 **Rolled 69** — The winner asks the whole room (in a thread).\n"
+        "⭐ **Rolled 100** — The winner asks the bottom 2 players.\n"
+        "☠️ **Rolled 1** — The top 2 players each ask the loser.\n"
+        "**Close** — Only the round opener (or an admin) can close early."
+    )
 
 
 def build_how_to_play_embed() -> discord.Embed:
