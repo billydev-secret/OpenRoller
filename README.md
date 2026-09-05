@@ -5,7 +5,7 @@
 ## Features
 - Interactive round flow with `Roll` and `Close` buttons.
 - One roll per user, per round.
-- Tie handling for highest roll via reroll set.
+- Ties for highest (or lowest) are settled by an automatic rolloff.
 - Winner/loser resolution when a round closes.
 - Winner follow-up prompt flow (including special `69` winner behavior).
 - SQLite-backed persistence for active rounds and pending prompts across restarts.
@@ -25,7 +25,7 @@
 - Pressing `Close` ends the round and resolves results.
 - If the highest roll is unique, that player is the winner.
 - The lowest roll is tracked as the loser.
-- If multiple players tie for highest, only those tied players reroll until a single winner exists.
+- If multiple players tie for highest, the bot runs an automatic rolloff among them until a single winner exists (the same applies to a tie for lowest).
 
 ### Winner Question Prompt
 - After a winner is resolved, the bot opens a question prompt for the winner.

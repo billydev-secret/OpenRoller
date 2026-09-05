@@ -23,18 +23,12 @@ from riskyroller.models import (
 
 
 class RiskyRollStateTests(unittest.TestCase):
-    def make_state(
-        self,
-        *,
-        rolls: dict[int, int] | None = None,
-        reroll_user_ids: set[int] | None = None,
-    ) -> RiskyRollState:
+    def make_state(self, *, rolls: dict[int, int] | None = None) -> RiskyRollState:
         return RiskyRollState(
             channel_id=123,
             guild_id=456,
             opener_id=789,
             rolls=rolls or {},
-            reroll_user_ids=reroll_user_ids or set(),
         )
 
     def test_resolve_not_enough_when_fewer_than_two_rolls(self) -> None:
@@ -43,16 +37,6 @@ class RiskyRollStateTests(unittest.TestCase):
         result = state.resolve()
 
         self.assertEqual(RoundResult.NOT_ENOUGH, result.result_type)
-        self.assertTrue(state.is_open)
-        self.assertIsNone(state.highest_user)
-        self.assertIsNone(state.lowest_user)
-
-    def test_resolve_waiting_for_rerolls_when_some_missing(self) -> None:
-        state = self.make_state(rolls={1: 75, 3: 5}, reroll_user_ids={1, 2})
-
-        result = state.resolve()
-
-        self.assertEqual(RoundResult.WAITING_FOR_REROLLS, result.result_type)
         self.assertTrue(state.is_open)
         self.assertIsNone(state.highest_user)
         self.assertIsNone(state.lowest_user)
@@ -89,53 +73,15 @@ class RiskyRollStateTests(unittest.TestCase):
         self.assertEqual(2, state.lowest_user)
         self.assertFalse(state.is_open)
 
-    def test_prepare_reroll_removes_tied_rolls_and_resets_result(self) -> None:
-        state = self.make_state(rolls={1: 100, 2: 100, 3: 8})
-        state.highest_user = 1
-        state.lowest_user = 3
+    def test_can_roll_is_one_roll_per_player(self) -> None:
+        state = self.make_state(rolls={3: 45})
 
-        state.prepare_reroll([1, 2])
-
-        self.assertEqual({1, 2}, state.reroll_user_ids)
-        self.assertEqual({3: 8}, state.rolls)
-        self.assertIsNone(state.highest_user)
-        self.assertIsNone(state.lowest_user)
-
-    def test_can_roll_restricts_to_reroll_set_when_active(self) -> None:
-        state = self.make_state(rolls={3: 45}, reroll_user_ids={1, 2})
-
-        self.assertTrue(state.can_roll(1))
-        self.assertTrue(state.can_roll(2))
         self.assertFalse(state.can_roll(3))
+        self.assertTrue(state.can_roll(4))
+
+        state.add_roll(4, 11)
+
         self.assertFalse(state.can_roll(4))
-
-        state.add_roll(1, 11)
-
-        self.assertFalse(state.can_roll(1))
-        self.assertTrue(state.can_roll(2))
-
-    def test_add_roll_clears_reroll_set_once_all_rerolls_are_in(self) -> None:
-        state = self.make_state(rolls={3: 40}, reroll_user_ids={1, 2})
-
-        state.add_roll(1, 70)
-        self.assertEqual({1, 2}, state.reroll_user_ids)
-
-        state.add_roll(2, 90)
-        self.assertEqual(set(), state.reroll_user_ids)
-
-    def test_reroll_mentions_are_sorted_for_stable_output(self) -> None:
-        state = self.make_state(reroll_user_ids={30, 10, 20})
-
-        mentions = state.reroll_mentions()
-
-        self.assertEqual("<@10>, <@20>, <@30>", mentions)
-
-    def test_pending_reroll_mentions_shows_only_pending_users(self) -> None:
-        state = self.make_state(rolls={1: 50}, reroll_user_ids={1, 2, 3})
-
-        mentions = state.pending_reroll_mentions()
-
-        self.assertEqual("<@2>, <@3>", mentions)
 
     def test_resolve_multiple_sixtynine_triggers_rolloff(self) -> None:
         state = self.make_state(rolls={1: 69, 2: 69, 3: 20})
@@ -197,15 +143,6 @@ class RiskyRollStateTests(unittest.TestCase):
         self.assertIn(state.lowest_user, [3, 4])
         self.assertEqual({3, 4}, state.lowest_tie_user_ids)
 
-    def test_resolve_clears_reroll_user_ids_on_tie_resolution(self) -> None:
-        state = self.make_state(rolls={1: 80, 2: 80, 3: 20})
-        state.reroll_user_ids = {1, 2}
-
-        result = state.resolve()
-
-        self.assertEqual(RoundResult.TIE, result.result_type)
-        self.assertEqual(set(), state.reroll_user_ids)
-
     def test_resolve_clears_lowest_tie_user_ids_at_start(self) -> None:
         state = self.make_state(rolls={1: 100, 2: 50})
         state.lowest_tie_user_ids = {99, 98}  # Stale data
@@ -225,22 +162,6 @@ class GameStatePresentationTests(unittest.TestCase):
         self.assertIn("Press **Roll** to join", embed.description or "")
         self.assertEqual("Rolls (0)", embed.fields[0].name)
         self.assertEqual("No rolls yet.", embed.fields[0].value)
-
-    def test_build_embed_for_open_reroll_waiting(self) -> None:
-        state = RiskyRollState(
-            channel_id=1,
-            guild_id=2,
-            opener_id=3,
-            rolls={11: 76},
-            reroll_user_ids={11, 22},
-        )
-
-        embed = build_embed(state)
-
-        self.assertIn("Tie for highest", embed.description or "")
-        self.assertIn("Reroll", embed.fields[1].name)
-        self.assertIn("Tied: <@11>, <@22>", embed.fields[1].value or "")
-        self.assertIn("Waiting on: <@22>", embed.fields[1].value or "")
 
     def test_build_embed_for_closed_standard_result(self) -> None:
         state = RiskyRollState(

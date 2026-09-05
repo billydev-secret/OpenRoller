@@ -63,15 +63,6 @@ class StoreTests(unittest.TestCase):
 
         self.assertEqual({11: 80, 22: 40, 33: 60}, loaded[0].rolls)
 
-    def test_save_and_load_round_preserves_reroll_user_ids(self) -> None:
-        state = self.make_state()
-        state.reroll_user_ids = {11, 22}
-        run(self.store.save_round(state))
-
-        loaded = run(self.store.load_active_rounds())
-
-        self.assertEqual({11, 22}, loaded[0].reroll_user_ids)
-
     def test_save_and_load_round_preserves_message_id(self) -> None:
         state = self.make_state(message_id=999)
         run(self.store.save_round(state))
@@ -359,6 +350,25 @@ class StoreTests(unittest.TestCase):
 
     def test_initialize_is_idempotent(self) -> None:
         run(self.store.initialize())  # Second call should not raise or duplicate
+
+    def test_legacy_reroll_column_is_tolerated(self) -> None:
+        # Databases created before the reroll was removed still carry the
+        # reroll_user_ids column. It is left in place rather than dropped, so
+        # saving and loading a round must work around it without error.
+        import sqlite3
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("ALTER TABLE active_rounds ADD COLUMN reroll_user_ids TEXT")
+        run(self.store.initialize())
+
+        state = self.make_state()
+        state.rolls = {11: 80, 22: 40}
+        run(self.store.save_round(state))
+
+        loaded = run(self.store.load_active_rounds())
+
+        self.assertEqual(1, len(loaded))
+        self.assertEqual({11: 80, 22: 40}, loaded[0].rolls)
 
 
 if __name__ == "__main__":

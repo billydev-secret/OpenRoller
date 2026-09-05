@@ -46,7 +46,7 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
         resolution = state.resolve()
         channel = await get_text_channel(client, channel_id)
 
-        if resolution.result_type in (RoundResult.NOT_ENOUGH, RoundResult.WAITING_FOR_REROLLS):
+        if resolution.result_type == RoundResult.NOT_ENOUGH:
             state.is_open = False
             app_state.active_games.pop(game_id, None)
             await app_state.store.delete_round(game_id)
@@ -317,9 +317,6 @@ class RiskyRollView(BaseRiskyRollView):
                 return
 
             if not state.can_roll(interaction.user.id):
-                if state.reroll_user_ids:
-                    await interaction.response.send_message("You cannot reroll right now.", ephemeral=True)
-                    return
                 await interaction.response.send_message("You already rolled this round.", ephemeral=True)
                 return
 
@@ -392,19 +389,6 @@ class RiskyRollView(BaseRiskyRollView):
                     return
 
             resolution = state.resolve()
-
-            if resolution.result_type == RoundResult.WAITING_FOR_REROLLS:
-                pending_ids = [uid for uid in state.reroll_user_ids if uid not in state.rolls]
-                await interaction.response.send_message(
-                    f"Still waiting for {state.pending_reroll_mentions()} to reroll.",
-                    allowed_mentions=discord.AllowedMentions(
-                        users=[discord.Object(id=uid) for uid in pending_ids],
-                        everyone=False,
-                        roles=False,
-                    ),
-                    ephemeral=True,
-                )
-                return
 
             if resolution.result_type == RoundResult.NOT_ENOUGH:
                 await interaction.response.send_message("At least 2 players must roll.", ephemeral=True)

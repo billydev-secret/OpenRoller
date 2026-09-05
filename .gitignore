@@ -3,3 +3,4 @@ consent_data.json
 .env
 *.sqlite3
 /.claude/
+__pycache__/
