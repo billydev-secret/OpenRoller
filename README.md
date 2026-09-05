@@ -50,33 +50,49 @@
 | `/support` | Get a link to the support Discord server. | Anyone |
 
 ## Requirements
-- Python `3.10+`
-- Discord bot token
+- Python 3.10 or newer.
+- A Discord application with a bot user: [Developer Portal](https://discord.com/developers/applications) → New Application → Bot → Reset Token. No privileged intents are needed.
 
 ## Installation
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
+git clone https://github.com/billydev-secret/OpenRoller.git
+cd OpenRoller
+python3 -m venv .venv              # Windows: py -m venv .venv
+source .venv/bin/activate          # Linux / macOS
+.venv\Scripts\activate             # Windows (cmd / PowerShell)
 pip install -r requirements.txt
 ```
 
-## Configuration
-Create `.env` in the project root:
+`python` and `pip` below mean the ones inside the activated virtualenv.
 
-```env
-DISCORD_TOKEN=your_bot_token
-GUILD_ID=your_debug_guild_id_optional
-STATE_DB_PATH=riskyroller.sqlite3
-SYNC_COMMANDS_ON_STARTUP=true
+## Configuration
+Copy the example and fill in your token:
+
+```bash
+cp .env.example .env               # Windows: copy .env.example .env
 ```
+
+`.env.example` documents every setting; only `DISCORD_TOKEN` is required. The bot reads `.env` from the directory it is started in, and the same file works as a Docker Compose `env_file` and a systemd `EnvironmentFile`.
 
 ### Environment Variables
 - `DISCORD_TOKEN` (required): bot token from the Discord Developer Portal.
-- `STATE_DB_PATH` (optional): SQLite file path. Defaults to `riskyroller.sqlite3`.
-- `SYNC_COMMANDS_ON_STARTUP` (optional): `true`/`false`, defaults to `true`.
-- `GUILD_ID` (optional): guild ID used when debug-only sync mode is enabled in code.
+- `STATE_DB_PATH` (optional): SQLite file path. Defaults to `riskyroller.sqlite3`, relative to the directory the bot is started in.
+- `SYNC_COMMANDS_ON_STARTUP` (optional): `true`/`false`, defaults to `true`. Registers the slash commands globally on every start; global registration can take up to an hour to appear in Discord.
+- `DEBUG` (optional): `true`/`false`, defaults to `false`. Copies the commands into the single server named by `GUILD_ID`, where they appear instantly — for development. Startup fails if `GUILD_ID` is missing.
+- `GUILD_ID` (optional): the numeric server ID used by `DEBUG` mode. Leave it unset otherwise.
 - `DEFAULT_MIN_GAME_SECONDS` (optional): how long a round must stay open before it can close — by the opener's Close button or by the player-threshold auto-close — for servers that haven't set their own with `/risky_set_min_game_time`. Defaults to `1800`. `/risky_start_no_ping` skips the minimum for that round.
 - `DEFAULT_MAX_GAMES_PER_CHANNEL` (optional): open rounds allowed per channel, for servers that haven't set their own with `/risky_set_max_games`. Defaults to `10`.
+
+Booleans accept `1`/`true`/`yes`/`on` (case-insensitive); anything else is false.
+
+## Inviting the bot
+The `/invite` command only works once the bot is already in a server, so for the first one build the link yourself. In the Developer Portal open your application → General Information and copy the **Application ID**, then open:
+
+```
+https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID&scope=bot+applications.commands&permissions=309237664768
+```
+
+That grants exactly what the bot needs: View Channel, Send Messages, Embed Links, Create Public Threads, Send Messages in Threads. Channels hidden from `@everyone` still need the bot's role added to them. Globally registered slash commands can take up to an hour to appear; set `DEBUG=true` and `GUILD_ID` while testing to have them appear in one server immediately.
 
 ## Running
 ```bash
@@ -102,7 +118,10 @@ The database runs in WAL mode, so `-wal` and `-shm` files sit next to the `.sqli
 - State cleanup can be forced per-channel with `/risky_reset_state`.
 
 ## Development
-- Entrypoint: `main.py`
-- Main dependencies: see `requirements.txt`
-- Logging: standard Python logging at `INFO` level by default.
-- Tests: `python -m pytest tests/`
+- Entrypoint: `main.py`.
+- Tests are plain `unittest`, no extra packages needed:
+  ```bash
+  python -m unittest discover -s tests -v
+  ```
+  `pytest tests/` also works if you have pytest installed.
+- Logging: standard Python logging at `INFO`, with discord.py's own logger at `WARNING`.
