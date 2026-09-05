@@ -472,6 +472,23 @@ class StoreTests(unittest.TestCase):
 
     # --- schema migration ---
 
+    def test_connections_are_closed_after_use(self) -> None:
+        with self.store._connect() as conn:
+            conn.execute("SELECT 1")
+
+        with self.assertRaises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
+
+    def test_connection_rolls_back_and_closes_on_error(self) -> None:
+        with self.assertRaises(RuntimeError):
+            with self.store._connect() as conn:
+                conn.execute("INSERT INTO guild_settings (guild_id, ping_role_id) VALUES (1, 2)")
+                raise RuntimeError("boom")
+
+        self.assertEqual({}, run(self.store.load_ping_roles()))
+        with self.assertRaises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
+
     def test_database_runs_in_wal_mode(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
             mode = conn.execute("PRAGMA journal_mode").fetchone()[0]

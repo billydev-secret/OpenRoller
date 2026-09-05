@@ -2,6 +2,8 @@ import asyncio
 import logging
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from .logic import deserialize_user_ids, serialize_user_ids
 from .models import PendingQuestionState, PostedQuestionState, PromptKind, RiskyRollState
@@ -13,16 +15,27 @@ class StateStore:
     def __init__(self, path: str):
         self.path = path
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a connection, commit (or roll back) on exit, and always close it.
+
+        ``sqlite3.Connection`` used directly as a context manager only manages
+        the transaction; it leaves the connection open until garbage
+        collection, which under WAL also keeps the -wal/-shm files pinned.
+        """
         conn = sqlite3.connect(self.path, timeout=30)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout = 30000")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA cache_size=-32000")
-        conn.execute("PRAGMA mmap_size=268435456")
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA cache_size=-32000")
+            conn.execute("PRAGMA mmap_size=268435456")
+            conn.execute("PRAGMA foreign_keys = ON")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _initialize(self) -> None:
         with self._connect() as conn:
