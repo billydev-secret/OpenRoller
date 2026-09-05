@@ -60,10 +60,10 @@ cd OpenRoller
 python3 -m venv .venv              # Windows: py -m venv .venv
 source .venv/bin/activate          # Linux / macOS
 .venv\Scripts\activate             # Windows (cmd / PowerShell)
-pip install -r requirements.txt
+pip install .
 ```
 
-`python` and `pip` below mean the ones inside the activated virtualenv.
+`python` and `pip` below mean the ones inside the activated virtualenv. `pip install .` installs the bot and its two dependencies and adds a `riskyroller` command to the virtualenv; `pip install -r requirements.txt` still works if you only want the dependencies.
 
 ## Configuration
 Copy the example and fill in your token:
@@ -96,8 +96,12 @@ That grants exactly what the bot needs: View Channel, Send Messages, Embed Links
 
 ## Running
 ```bash
-python main.py
+riskyroller                        # with the virtualenv activated
+python -m riskyroller              # same thing
+python main.py                     # still works (it forwards to the same entrypoint)
 ```
+
+If `DISCORD_TOKEN` is missing, Discord rejects it, `DEBUG=true` has no `GUILD_ID`, or a numeric setting isn't a number, the bot exits with code 2 and a message saying exactly what to fix instead of a traceback.
 
 ## Data Storage
 The bot stores state in SQLite:
@@ -118,10 +122,13 @@ The database runs in WAL mode, so `-wal` and `-shm` files sit next to the `.sqli
 - State cleanup can be forced per-channel with `/risky_reset_state`.
 
 ## Development
-- Entrypoint: `main.py`.
+- Entrypoint: `riskyroller/__main__.py` (`main.py` is a shim that forwards to it). `pip install -e .` installs the checkout in editable mode for hacking.
 - Tests are plain `unittest`, no extra packages needed:
   ```bash
   python -m unittest discover -s tests -v
   ```
   `pytest tests/` also works if you have pytest installed.
 - Logging: standard Python logging at `INFO`, with discord.py's own logger at `WARNING`.
+
+## License
+MIT — see `LICENSE`.

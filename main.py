@@ -1,15 +1,11 @@
-import logging
+"""Compatibility shim: ``python main.py`` still works.
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
-logging.getLogger("discord").setLevel(logging.WARNING)
+The real entrypoint is ``riskyroller/__main__.py`` (``python -m riskyroller``
+or the ``riskyroller`` command); this file only forwards to it so existing
+service units and habits keep working.
+"""
 
-from riskyroller.bot import bot
-from riskyroller.config import TOKEN
+from riskyroller.__main__ import main
 
 if __name__ == "__main__":
-    if not TOKEN:
-        raise RuntimeError("DISCORD_TOKEN is not set in the environment.")
-    bot.run(TOKEN)
+    raise SystemExit(main())

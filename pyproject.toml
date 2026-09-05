@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "riskyroller"
+version = "1.0.0"
+description = "A Discord slash-command bot for running Risky Rolls rounds in a channel."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = [
+    "discord.py>=2.7,<3.0",
+    "python-dotenv>=1.0,<2.0",
+]
+
+[project.urls]
+Source = "https://github.com/billydev-secret/OpenRoller"
+Issues = "https://github.com/billydev-secret/OpenRoller/issues"
+
+[project.scripts]
+riskyroller = "riskyroller.__main__:main"
+
+[dependency-groups]
+# The test suite is plain unittest and needs nothing; pytest is here only as a
+# nicer runner for people who prefer it.
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["riskyroller"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "riskyroller/",
+    "tests/",
+    "README.md",
+    ".env.example",
+    "LICENSE",
+]
