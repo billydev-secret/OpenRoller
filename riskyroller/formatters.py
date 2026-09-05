@@ -44,6 +44,65 @@ def format_user_mentions(user_ids: set[int]) -> str:
     return " ".join(f"<@{user_id}>" for user_id in sorted(user_ids))
 
 
+def format_duration(seconds: int) -> str:
+    """Whole seconds as '45 seconds', '2 minutes', '1 hour 5 minutes'."""
+    seconds = max(0, int(seconds))
+
+    def unit(n: int, word: str) -> str:
+        return f"{n} {word}{'s' if n != 1 else ''}"
+
+    if seconds < 60:
+        return unit(seconds, "second")
+    minutes, rest = divmod(seconds, 60)
+    if minutes < 60:
+        return unit(minutes, "minute") + (f" {unit(rest, 'second')}" if rest else "")
+    hours, minutes = divmod(minutes, 60)
+    return unit(hours, "hour") + (f" {unit(minutes, 'minute')}" if minutes else "")
+
+
+def join_names(items: list[str]) -> str:
+    """'a', 'a and b', 'a, b and c'."""
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + f" and {items[-1]}"
+
+
+def auto_close_hint(state: RiskyRollState) -> str:
+    """How this round ends on its own, or '' when it only ends by hand."""
+    parts = []
+    if state.auto_close_players:
+        parts.append(f"once {state.auto_close_players} players have rolled")
+    if state.auto_close_minutes:
+        parts.append(f"after {format_duration(state.auto_close_minutes * 60)}")
+    if not parts:
+        return ""
+    tail = ", whichever comes first" if len(parts) == 2 else ""
+    return f"It auto-closes {' or '.join(parts)}{tail}."
+
+
+# Where a server admin grants the bot a permission. Kept as one sentence so
+# every failure that comes down to permissions gives the same directions.
+PERMISSION_FIX_HINT = (
+    "An admin can grant it under Server Settings → Roles → my role, or for this channel alone "
+    "under Edit Channel → Permissions by adding my role — a channel hidden from the everyone "
+    "role needs the second."
+)
+
+# For failures that may or may not be permissions: what to check, without
+# claiming to know.
+PERMISSION_CHECK_HINT = (
+    "If it keeps happening, an admin should check I have View Channel, Send Messages and "
+    "Embed Links in this channel."
+)
+
+
+def permission_help(missing: list[str]) -> str:
+    """Name what's missing and where to grant it; '' when nothing is missing."""
+    if not missing:
+        return ""
+    return f"I'm missing {join_names(missing)} in this channel. {PERMISSION_FIX_HINT}"
+
+
 def format_lowest_rolloff_note(
     tied_user_ids: set[int],
     selected_user_id: int | None,

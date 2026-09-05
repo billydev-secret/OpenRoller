@@ -43,8 +43,17 @@ REQUIRED_CHANNEL_PERMISSIONS: tuple[tuple[str, str], ...] = (
 )
 
 
-def missing_start_permissions(app_permissions) -> list[str]:
-    """Names of the permissions a round needs that *app_permissions* lacks.
+# What the 69 room question needs on top, to open its thread. Not required
+# to start a round: when they are missing the question falls back to the
+# channel, and the asker is told why.
+REQUIRED_THREAD_PERMISSIONS: tuple[tuple[str, str], ...] = (
+    ("create_public_threads", "Create Public Threads"),
+    ("send_messages_in_threads", "Send Messages in Threads"),
+)
+
+
+def missing_permissions(app_permissions, required=REQUIRED_CHANNEL_PERMISSIONS) -> list[str]:
+    """Labels from *required* that *app_permissions* lacks, in the order given.
 
     Takes ``interaction.app_permissions`` — Discord's own computation of what
     the bot may do where the command was used. Checking the channel object
@@ -52,7 +61,12 @@ def missing_start_permissions(app_permissions) -> list[str]:
     the interaction's partial payload, which carries no overwrites, so it
     reports role permissions and misses a channel-level deny.
     """
-    return [label for attr, label in REQUIRED_CHANNEL_PERMISSIONS if not getattr(app_permissions, attr)]
+    return [label for attr, label in required if not getattr(app_permissions, attr)]
+
+
+def missing_start_permissions(app_permissions) -> list[str]:
+    """Names of the permissions a round needs that *app_permissions* lacks."""
+    return missing_permissions(app_permissions, REQUIRED_CHANNEL_PERMISSIONS)
 
 
 def effective_min_game_seconds(

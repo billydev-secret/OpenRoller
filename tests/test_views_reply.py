@@ -97,6 +97,27 @@ class ReplyModalTests(unittest.IsolatedAsyncioTestCase):
 
         interaction.response.edit_message.assert_not_awaited()
         self.assertIn(555, app_state.posted_questions)
+        text = interaction.response.send_message.await_args.args[0]
+        self.assertIn("Only <@20> can reply", text)
+        self.assertIsInstance(interaction.response.send_message.await_args.kwargs["allowed_mentions"], discord.AllowedMentions)
+
+    async def test_closed_question_says_why_and_what_to_expect(self) -> None:
+        app_state.posted_questions.clear()
+        interaction = self._interaction()
+
+        await self._submit(interaction)
+
+        text = interaction.response.send_message.await_args.args[0]
+        self.assertIn("no longer open for a reply", text)
+        self.assertIn("7 days", text)
+
+    async def test_empty_reply_tells_them_to_type_one(self) -> None:
+        interaction = self._interaction()
+
+        await self._submit(interaction, "   ")
+
+        interaction.response.edit_message.assert_not_awaited()
+        self.assertIn("Press **Reply** again", interaction.response.send_message.await_args.args[0])
 
 
 if __name__ == "__main__":

@@ -13,9 +13,19 @@ from riskyroller.formatters import (
     build_pending_question_summary,
     build_question_reply_embed,
     build_rolloff_embed,
+    auto_close_hint,
+    format_duration,
     format_lowest_rolloff_note,
+    join_names,
+    permission_help,
 )
-from riskyroller.logic import effective_min_game_seconds, missing_start_permissions, run_tie_rolloff
+from riskyroller.logic import (
+    REQUIRED_THREAD_PERMISSIONS,
+    effective_min_game_seconds,
+    missing_permissions,
+    missing_start_permissions,
+    run_tie_rolloff,
+)
 from riskyroller.models import (
     PendingQuestionState,
     PostedQuestionState,
@@ -548,6 +558,56 @@ class StartPermissionTests(unittest.TestCase):
         perms = discord.Permissions(view_channel=True, send_messages=True, embed_links=True, administrator=False)
 
         self.assertEqual([], missing_start_permissions(perms))
+
+    def test_thread_permissions_are_checked_separately(self) -> None:
+        perms = discord.Permissions(view_channel=True, send_messages=True, embed_links=True)
+
+        self.assertEqual(
+            ["Create Public Threads", "Send Messages in Threads"],
+            missing_permissions(perms, REQUIRED_THREAD_PERMISSIONS),
+        )
+        self.assertEqual([], missing_start_permissions(perms))
+
+
+class RefusalCopyHelperTests(unittest.TestCase):
+    def test_format_duration(self) -> None:
+        cases = [
+            (0, "0 seconds"), (1, "1 second"), (45, "45 seconds"), (60, "1 minute"),
+            (90, "1 minute 30 seconds"), (1800, "30 minutes"), (3600, "1 hour"),
+            (3900, "1 hour 5 minutes"), (7200, "2 hours"), (-5, "0 seconds"),
+        ]
+        for seconds, expected in cases:
+            with self.subTest(seconds=seconds):
+                self.assertEqual(expected, format_duration(seconds))
+
+    def test_join_names(self) -> None:
+        self.assertEqual("", join_names([]))
+        self.assertEqual("a", join_names(["a"]))
+        self.assertEqual("a and b", join_names(["a", "b"]))
+        self.assertEqual("a, b and c", join_names(["a", "b", "c"]))
+
+    def test_auto_close_hint_states_the_real_settings(self) -> None:
+        both = RiskyRollState(channel_id=1, guild_id=2, opener_id=3, auto_close_players=25, auto_close_minutes=120)
+        players = RiskyRollState(channel_id=1, guild_id=2, opener_id=3, auto_close_players=4)
+        minutes = RiskyRollState(channel_id=1, guild_id=2, opener_id=3, auto_close_minutes=1)
+        neither = RiskyRollState(channel_id=1, guild_id=2, opener_id=3)
+
+        self.assertEqual(
+            "It auto-closes once 25 players have rolled or after 2 hours, whichever comes first.",
+            auto_close_hint(both),
+        )
+        self.assertEqual("It auto-closes once 4 players have rolled.", auto_close_hint(players))
+        self.assertEqual("It auto-closes after 1 minute.", auto_close_hint(minutes))
+        self.assertEqual("", auto_close_hint(neither))
+
+    def test_permission_help_names_the_permission_and_where_to_grant_it(self) -> None:
+        text = permission_help(["View Channel"])
+
+        self.assertIn("I'm missing View Channel in this channel.", text)
+        self.assertIn("Server Settings", text)
+        self.assertIn("Edit Channel", text)
+        self.assertEqual("", permission_help([]))
+        self.assertIn("View Channel, Send Messages and Embed Links", permission_help(["View Channel", "Send Messages", "Embed Links"]))
 
 
 class QuestionReplyEmbedTests(unittest.TestCase):
