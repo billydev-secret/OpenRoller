@@ -311,14 +311,19 @@ class RiskyRollView(BaseRiskyRollView):
         emoji="🎲",
     )
     async def roll_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Acknowledge at once: the interaction token lasts three seconds, and
+        # a burst of rolls can hold the game lock (and the database) longer
+        # than that. A deferred component response edits the round message
+        # later; refusals go out as ephemeral follow-ups.
+        await interaction.response.defer()
         async with app_state.get_game_lock(self.game_id):
             state = app_state.active_games.get(self.game_id)
             if not state or not state.is_open:
-                await interaction.response.send_message("No open round to roll in.", ephemeral=True)
+                await interaction.followup.send("No open round to roll in.", ephemeral=True)
                 return
 
             if not state.can_roll(interaction.user.id):
-                await interaction.response.send_message("You already rolled this round.", ephemeral=True)
+                await interaction.followup.send("You already rolled this round.", ephemeral=True)
                 return
 
             roll = random.randint(1, 100)
@@ -335,7 +340,7 @@ class RiskyRollView(BaseRiskyRollView):
                 roll,
             )
 
-            await interaction.response.edit_message(embed=build_embed(state, interaction.guild), view=self)
+            await interaction.edit_original_response(embed=build_embed(state, interaction.guild), view=self)
 
             if state.auto_close_players and len(state.rolls) >= state.auto_close_players:
                 task = app_state.auto_close_tasks.pop(self.game_id, None)
