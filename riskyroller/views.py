@@ -899,7 +899,8 @@ class QuestionReplyModal(discord.ui.Modal, title="Reply"):
                 await _ephemeral(
                     interaction,
                     "Discord rejected the update, so your reply was not posted — press **Reply** to try again. "
-                    f"If it keeps failing, report it via /support. Your reply was:\n> {reply_text}",
+                    "If it keeps failing, whoever hosts this bot can find the details in its log. "
+                    f"Your reply was:\n> {reply_text}",
                 )
                 return
 
