@@ -103,6 +103,8 @@ python main.py                     # still works (it forwards to the same entryp
 
 If `DISCORD_TOKEN` is missing, Discord rejects it, `DEBUG=true` has no `GUILD_ID`, or a numeric setting isn't a number, the bot exits with code 2 and a message saying exactly what to fix instead of a traceback.
 
+On the first start the log prints the invite link (as a warning if the bot isn't in any server yet), so the section above is only needed if you want to build it by hand. The same link is available later from `/invite`.
+
 ## Data Storage
 The bot stores state in SQLite:
 - `guild_settings`

@@ -8,6 +8,7 @@ from discord import app_commands
 from . import commands
 from . import state as app_state
 from .config import DEBUG, DEBUG_GUILD_ID, DEFAULT_MIN_GAME_SECONDS, SYNC_COMMANDS_ON_STARTUP
+from .invite import invite_url
 from .logic import effective_min_game_seconds
 from .views import QuestionReplyView, RiskyRollView, SixtyNineQuestionView, schedule_auto_close
 
@@ -22,6 +23,7 @@ class Bot(discord.Client):
     def __init__(self):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
+        self._invite_logged = False
         log.info("Bot is starting.")
 
     async def setup_hook(self) -> None:
@@ -119,6 +121,24 @@ class Bot(discord.Client):
 
     async def on_ready(self) -> None:
         log.info("Bot ready in %s guild(s).", len(self.guilds))
+        self._log_invite_link_once()
+
+    def _log_invite_link_once(self) -> None:
+        """Print the invite link on the first ready so a fresh install needs no other tool.
+
+        on_ready fires again after every reconnect; the link is logged once.
+        """
+        if self._invite_logged:
+            return
+        application_id = self.application_id or (self.user.id if self.user else None)
+        if application_id is None:
+            return
+        self._invite_logged = True
+        url = invite_url(application_id)
+        if self.guilds:
+            log.info("Invite link (bot + slash commands): %s", url)
+        else:
+            log.warning("This bot is not in any server yet. Open this link to add it: %s", url)
 
     async def on_guild_remove(self, guild: discord.Guild) -> None:
         guild_id = guild.id

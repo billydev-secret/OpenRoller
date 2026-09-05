@@ -8,6 +8,7 @@ from discord import app_commands
 from . import state as app_state
 from .config import DEFAULT_MAX_GAMES_PER_CHANNEL
 from .formatters import build_embed
+from .invite import invite_url
 from .logic import missing_start_permissions
 from .models import RiskyRollState
 from .views import RiskyRollView, disable_pending_question_message, disable_round_message, schedule_auto_close
@@ -309,21 +310,13 @@ def setup(bot: "Bot") -> None:
         description="Get an invite link to add Risky Rolls to your server",
     )
     async def invite(interaction: discord.Interaction):
-        if interaction.client.user is None:
+        client = interaction.client
+        application_id = client.application_id or (client.user.id if client.user else None)
+        if application_id is None:
             await _send_ephemeral(interaction, "Bot is not ready yet. Try again in a moment.")
             return
 
-        url = discord.utils.oauth_url(
-            interaction.client.user.id,
-            permissions=discord.Permissions(
-                view_channel=True,
-                send_messages=True,
-                embed_links=True,
-                create_public_threads=True,
-                send_messages_in_threads=True,
-            ),
-            scopes=["bot", "applications.commands"],
-        )
+        url = invite_url(application_id)
         await interaction.response.send_message(
             f"[Click here to add Risky Rolls to your server!]({url})",
             ephemeral=True,
