@@ -45,6 +45,22 @@ def format_user_mentions(user_ids: set[int]) -> str:
     return " ".join(f"<@{user_id}>" for user_id in sorted(user_ids))
 
 
+# Enough that a big room is pinged, few enough that the mentions plus a
+# 300-character question always fit Discord's 2,000-character message limit
+# (a mention is at most 23 characters with its space).
+ROOM_MENTION_LIMIT = 50
+
+
+def format_room_mentions(user_ids: set[int], limit: int = ROOM_MENTION_LIMIT) -> str:
+    """Mentions for a room-wide question, capped so the post always fits."""
+    ordered = sorted(user_ids)
+    shown = " ".join(f"<@{uid}>" for uid in ordered[:limit])
+    extra = len(ordered) - limit
+    if extra > 0:
+        shown += f" and {extra} more"
+    return shown
+
+
 def format_duration(seconds: int) -> str:
     """Whole seconds as '45 seconds', '2 minutes', '1 hour 5 minutes'."""
     seconds = max(0, int(seconds))

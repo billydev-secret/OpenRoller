@@ -24,6 +24,7 @@ from .formatters import (
     build_question_reply_content,
     failure_reason,
     format_duration,
+    format_room_mentions,
     format_user_mentions,
     get_text_channel,
     join_names,
@@ -538,15 +539,18 @@ class RiskyRollView(BaseRiskyRollView):
                 if remaining > 0:
                     hint = auto_close_hint(state)
                     origin = (
-                        "this server's minimum"
+                        "This server's minimum"
                         if state.guild_id in app_state.min_game_seconds
-                        else "the default minimum"
+                        else "The default minimum"
                     )
+                    # "Locked" rather than "stays open": a minutes auto-close
+                    # shorter than the minimum still fires, and the hint may
+                    # say so in the same breath.
                     await _ephemeral(
                         interaction,
-                        f"This round can't be closed by hand for another {format_duration(remaining)}: rounds "
-                        f"stay open at least {format_duration(min_seconds)} ({origin}) so everyone gets a "
-                        f"chance to roll.{' ' + hint if hint else ''} Admins can change the minimum with "
+                        f"This round can't be closed by hand for another {format_duration(remaining)}: {origin} "
+                        f"keeps **Close Round** locked for the first {format_duration(min_seconds)} so everyone "
+                        f"gets a chance to roll.{' ' + hint if hint else ''} Admins can change the minimum with "
                         "/risky_set_min_game_time; /risky_start_no_ping opens a round without one.",
                     )
                     return
@@ -659,7 +663,8 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 channel = interaction.channel
                 thread_name = question_text[:97] + "..." if len(question_text) > 97 else question_text
                 thread = None
-                thread_failed = False
+                thread_failed = False  # could not create one
+                thread_post_failed = False  # created one, could not post in it
                 try:
                     if isinstance(channel, discord.TextChannel) and state.prompt_message_id is not None:
                         partial_msg = channel.get_partial_message(state.prompt_message_id)
@@ -677,7 +682,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                     log.exception("Failed to create thread for 69 question in game %s.", self.game_id)
                     thread_failed = True
 
-                all_mentions = format_user_mentions(state.participant_user_ids)
+                all_mentions = format_room_mentions(state.participant_user_ids)
                 content = f"{all_mentions}\n<@{asker_id}> asks:\n{question_text}"
 
                 posted_in_thread = False
@@ -693,7 +698,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                         # Create Public Threads is not. Fall back to the
                         # channel rather than fail the question.
                         log.exception("Failed to post 69 question in its thread for game %s.", self.game_id)
-                        thread_failed = True
+                        thread_post_failed = True
                 if not posted_in_thread:
                     try:
                         await interaction.followup.send(
@@ -703,12 +708,15 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                         )
                     except discord.HTTPException:
                         log.exception("Failed to post 69 question for game %s.", self.game_id)
+                        # Only blame a thread permission if a thread was tried.
+                        required = (
+                            REQUIRED_CHANNEL_PERMISSIONS + REQUIRED_THREAD_PERMISSIONS
+                            if thread_failed or thread_post_failed
+                            else REQUIRED_CHANNEL_PERMISSIONS
+                        )
                         await _ephemeral(
                             interaction,
-                            _post_failure_text(
-                                "question", question_text, "Ask Question", interaction,
-                                REQUIRED_CHANNEL_PERMISSIONS + REQUIRED_THREAD_PERMISSIONS,
-                            ),
+                            _post_failure_text("question", question_text, "Ask Question", interaction, required),
                         )
                         return
 
@@ -721,11 +729,19 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 )
                 if posted_in_thread:
                     done = "Question posted in a thread."
-                elif thread_failed:
+                elif thread_post_failed:
                     # The question went out, just not where it should have; say
                     # why so the next round can go right.
                     missing = missing_permissions(interaction.app_permissions, REQUIRED_THREAD_PERMISSIONS)
-                    done = "I couldn't use a thread here, so the question is posted in the channel instead. " + (
+                    done = "I opened a thread but couldn't post in it, so the question is posted in the channel instead. " + (
+                        permission_help(missing)
+                        if missing
+                        else "My thread permissions look right, so this was most likely a passing Discord error — "
+                        "whoever hosts this bot can find the details in its log."
+                    )
+                elif thread_failed:
+                    missing = missing_permissions(interaction.app_permissions, REQUIRED_THREAD_PERMISSIONS)
+                    done = "I couldn't open a thread here, so the question is posted in the channel instead. " + (
                         permission_help(missing)
                         if missing
                         else "My thread permissions look right — Discord refused the thread, which usually "

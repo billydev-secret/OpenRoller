@@ -17,6 +17,7 @@ from riskyroller.formatters import (
     failure_reason,
     format_duration,
     format_lowest_rolloff_note,
+    format_room_mentions,
     join_names,
     permission_help,
 )
@@ -580,6 +581,18 @@ class RefusalCopyHelperTests(unittest.TestCase):
         for seconds, expected in cases:
             with self.subTest(seconds=seconds):
                 self.assertEqual(expected, format_duration(seconds))
+
+    def test_room_mentions_are_capped_so_the_post_always_fits(self) -> None:
+        small = {3, 1, 2}
+        big = set(range(1, 81))
+
+        self.assertEqual("<@1> <@2> <@3>", format_room_mentions(small))
+        capped = format_room_mentions(big)
+        self.assertTrue(capped.endswith(" and 30 more"))
+        self.assertEqual(50, capped.count("<@"))
+        # Worst case: 50 max-length snowflake mentions plus a 300-char question stays under 2,000.
+        worst = format_room_mentions({10**18 + i for i in range(80)})
+        self.assertLess(len(worst) + len("\n<@1000000000000000000> asks:\n") + 300, 2000)
 
     def test_join_names(self) -> None:
         self.assertEqual("", join_names([]))
