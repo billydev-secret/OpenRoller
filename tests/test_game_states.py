@@ -18,7 +18,6 @@ from riskyroller.models import (
     PendingQuestionState,
     PostedQuestionState,
     PromptKind,
-    ResolutionResult,
     RiskyRollState,
     RoundResult,
 )
