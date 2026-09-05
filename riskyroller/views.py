@@ -8,6 +8,7 @@ import discord
 
 from . import state as app_state
 from .config import DEFAULT_MIN_GAME_SECONDS
+from .filters import contains_disallowed_content
 from .formatters import (
     build_embed,
     build_how_to_play_content,
@@ -466,6 +467,13 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 )
                 return
 
+            if contains_disallowed_content(question_text):
+                await interaction.response.send_message(
+                    "That question contains disallowed content. Please rephrase.",
+                    ephemeral=True,
+                )
+                return
+
             await interaction.response.defer(ephemeral=True)
 
             if state.prompt_kind == PromptKind.ROOM:
@@ -657,6 +665,15 @@ class QuestionReplyModal(discord.ui.Modal, title="Reply"):
             if not reply_text:
                 await interaction.response.send_message(
                     "Enter a reply before sending it.", ephemeral=True
+                )
+                return
+
+            # The reply is posted publicly too, so it gets the same guard as
+            # the question.
+            if contains_disallowed_content(reply_text):
+                await interaction.response.send_message(
+                    "That reply contains disallowed content. Please rephrase.",
+                    ephemeral=True,
                 )
                 return
 
