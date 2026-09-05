@@ -292,15 +292,28 @@ class BaseRiskyRollView(discord.ui.View):
                 item.disabled = True
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        # The interaction token expired before we answered (Discord error
+        # 10062: Unknown interaction). Nothing can be sent on it any more, and
+        # it is not a fault in the game — log quietly and move on.
+        if isinstance(error, discord.NotFound) and error.code == 10062:
+            log.debug(
+                "Interaction expired in %s (game %s)", type(self).__name__, self.game_id or "?",
+            )
+            return
         if self.game_id:
             log.exception("Unhandled error in %s (game %s)", type(self).__name__, self.game_id, exc_info=error)
         else:
             log.exception("Unhandled error in %s", type(self).__name__, exc_info=error)
         msg = "Something went wrong. Please try again."
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            # The apology itself failed (token gone, channel gone); the
+            # original error is already logged.
+            pass
 
 
 class RiskyRollView(BaseRiskyRollView):
