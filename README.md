@@ -46,7 +46,6 @@
 | `/risky_set_min_game_time <seconds>` | Set the minimum time before a round can be manually closed (0 disables). | Administrator |
 | `/risky_set_max_games <count>` | Set how many rounds can be open in one channel at a time (0 restores the default of 10). | Administrator |
 | `/risky_reset_state` | Clear active rounds and pending prompts in the current channel. | Administrator |
-| `/risky_showcase` | Post sample game flows for screenshots — non-functional. | Administrator |
 | `/invite` | Get an invite link to add the bot to your server. | Anyone |
 | `/support` | Get a link to the support Discord server. | Anyone |
 
@@ -76,6 +75,8 @@ SYNC_COMMANDS_ON_STARTUP=true
 - `STATE_DB_PATH` (optional): SQLite file path. Defaults to `riskyroller.sqlite3`.
 - `SYNC_COMMANDS_ON_STARTUP` (optional): `true`/`false`, defaults to `true`.
 - `GUILD_ID` (optional): guild ID used when debug-only sync mode is enabled in code.
+- `DEFAULT_MIN_GAME_SECONDS` (optional): minimum seconds a round stays open before auto-closing on the player threshold, for servers that haven't set their own with `/risky_set_min_game_time`. Defaults to `1800`.
+- `DEFAULT_MAX_GAMES_PER_CHANNEL` (optional): open rounds allowed per channel, for servers that haven't set their own with `/risky_set_max_games`. Defaults to `10`.
 
 ## Running
 ```bash
@@ -90,7 +91,9 @@ The bot stores state in SQLite:
 - `pending_questions`
 - `posted_questions`
 
-Schema initialization and lightweight migrations run on startup. Posted questions older than 7 days are swept on startup. When the bot is removed from a guild, all of that guild's data is deleted.
+Schema initialization and lightweight migrations run on startup. Posted questions and unanswered question prompts older than 7 days are swept on startup. When the bot is removed from a guild, all of that guild's data is deleted.
+
+The database runs in WAL mode, so `-wal` and `-shm` files sit next to the `.sqlite3` file while the bot is running; include them if you copy the database while the bot is up.
 
 ## Operational Notes
 - Slash commands are guild-only.

@@ -2,5 +2,7 @@ request_channels.json
 consent_data.json
 .env
 *.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 /.claude/
 __pycache__/
