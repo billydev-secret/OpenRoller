@@ -13,7 +13,7 @@ from riskyroller.formatters import (
     build_rolloff_embed,
     format_lowest_rolloff_note,
 )
-from riskyroller.logic import run_tie_rolloff
+from riskyroller.logic import effective_min_game_seconds, run_tie_rolloff
 from riskyroller.models import (
     PendingQuestionState,
     PostedQuestionState,
@@ -509,6 +509,21 @@ class RosterNameTests(unittest.TestCase):
     def test_format_lowest_rolloff_note_defaults_to_mentions(self) -> None:
         self.assertEqual("<@1>, <@2> → <@2>", format_lowest_rolloff_note({1, 2}, 2))
         self.assertEqual("A, B → B", format_lowest_rolloff_note({1, 2}, 2, {1: "A", 2: "B"}.__getitem__))
+
+
+class MinGameTimeTests(unittest.TestCase):
+    def test_unset_guild_uses_default(self) -> None:
+        self.assertEqual(1800, effective_min_game_seconds({}, 1, False, 1800))
+
+    def test_configured_value_wins_over_default(self) -> None:
+        self.assertEqual(60, effective_min_game_seconds({1: 60}, 1, False, 1800))
+
+    def test_zero_disables_rather_than_falling_back(self) -> None:
+        self.assertEqual(0, effective_min_game_seconds({1: 0}, 1, False, 1800))
+
+    def test_skip_flag_wins_outright(self) -> None:
+        self.assertEqual(0, effective_min_game_seconds({1: 60}, 1, True, 1800))
+        self.assertEqual(0, effective_min_game_seconds({}, 1, True, 1800))
 
 
 class QuestionReplyEmbedTests(unittest.TestCase):

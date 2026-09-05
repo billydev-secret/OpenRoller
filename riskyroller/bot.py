@@ -8,6 +8,7 @@ from discord import app_commands
 from . import commands
 from . import state as app_state
 from .config import DEBUG, DEBUG_GUILD_ID, DEFAULT_MIN_GAME_SECONDS, SYNC_COMMANDS_ON_STARTUP
+from .logic import effective_min_game_seconds
 from .views import QuestionReplyView, RiskyRollView, SixtyNineQuestionView, schedule_auto_close
 
 log = logging.getLogger(__name__)
@@ -59,7 +60,9 @@ class Bot(discord.Client):
 
                 if state.auto_close_players and len(state.rolls) >= state.auto_close_players:
                     elapsed = time.time() - state.created_at
-                    min_seconds = 0 if state.skip_min_game_time else app_state.min_game_seconds.get(state.guild_id, DEFAULT_MIN_GAME_SECONDS)
+                    min_seconds = effective_min_game_seconds(
+                        app_state.min_game_seconds, state.guild_id, state.skip_min_game_time, DEFAULT_MIN_GAME_SECONDS
+                    )
                     remaining = max(0.0, min_seconds - elapsed)
                     app_state.auto_close_tasks[state.game_id] = asyncio.create_task(
                         schedule_auto_close(self, state.game_id, remaining)

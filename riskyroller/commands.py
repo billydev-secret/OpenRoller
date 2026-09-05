@@ -209,13 +209,13 @@ def setup(bot: "Bot") -> None:
             await _send_ephemeral(interaction, "Minimum game time cannot be negative.")
             return
 
+        # 0 is stored as 0, not cleared: an absent value means "use the
+        # default", and disabling the minimum must not quietly restore it.
+        app_state.min_game_seconds[interaction.guild.id] = seconds
+        await app_state.store.set_min_game_time(interaction.guild.id, seconds)
         if seconds == 0:
-            app_state.min_game_seconds.pop(interaction.guild.id, None)
-            await app_state.store.set_min_game_time(interaction.guild.id, None)
             await _send_ephemeral(interaction, "Minimum game time disabled.")
         else:
-            app_state.min_game_seconds[interaction.guild.id] = seconds
-            await app_state.store.set_min_game_time(interaction.guild.id, seconds)
             await _send_ephemeral(interaction, f"Minimum game time set to {seconds} second(s).")
 
     @bot.tree.command(

@@ -43,7 +43,7 @@
 | `/risky_start` | Open a new Risky Rolls round (pings the configured role). | Server members |
 | `/risky_start_no_ping` | Open a new round without pinging and without a minimum game time. | Server members |
 | `/risky_set_ping <role>` | Set the role pinged when a new round starts. | Administrator |
-| `/risky_set_min_game_time <seconds>` | Set the minimum time before a round can be manually closed (0 disables). | Administrator |
+| `/risky_set_min_game_time <seconds>` | Set how long a round must stay open before it can close, by the opener or by auto-close (0 disables). | Administrator |
 | `/risky_set_max_games <count>` | Set how many rounds can be open in one channel at a time (0 restores the default of 10). | Administrator |
 | `/risky_reset_state` | Clear active rounds and pending prompts in the current channel. | Administrator |
 | `/invite` | Get an invite link to add the bot to your server. | Anyone |
@@ -75,7 +75,7 @@ SYNC_COMMANDS_ON_STARTUP=true
 - `STATE_DB_PATH` (optional): SQLite file path. Defaults to `riskyroller.sqlite3`.
 - `SYNC_COMMANDS_ON_STARTUP` (optional): `true`/`false`, defaults to `true`.
 - `GUILD_ID` (optional): guild ID used when debug-only sync mode is enabled in code.
-- `DEFAULT_MIN_GAME_SECONDS` (optional): minimum seconds a round stays open before auto-closing on the player threshold, for servers that haven't set their own with `/risky_set_min_game_time`. Defaults to `1800`.
+- `DEFAULT_MIN_GAME_SECONDS` (optional): how long a round must stay open before it can close — by the opener's Close button or by the player-threshold auto-close — for servers that haven't set their own with `/risky_set_min_game_time`. Defaults to `1800`. `/risky_start_no_ping` skips the minimum for that round.
 - `DEFAULT_MAX_GAMES_PER_CHANNEL` (optional): open rounds allowed per channel, for servers that haven't set their own with `/risky_set_max_games`. Defaults to `10`.
 
 ## Running

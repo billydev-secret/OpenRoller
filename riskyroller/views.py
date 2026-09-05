@@ -9,6 +9,7 @@ import discord
 from . import state as app_state
 from .config import DEFAULT_MIN_GAME_SECONDS
 from .filters import contains_disallowed_content
+from .logic import effective_min_game_seconds
 from .formatters import (
     build_embed,
     build_how_to_play_content,
@@ -360,7 +361,9 @@ class RiskyRollView(BaseRiskyRollView):
                 if task:
                     task.cancel()
                 elapsed = time.time() - state.created_at
-                min_seconds = 0 if state.skip_min_game_time else app_state.min_game_seconds.get(state.guild_id, DEFAULT_MIN_GAME_SECONDS)
+                min_seconds = effective_min_game_seconds(
+                    app_state.min_game_seconds, state.guild_id, state.skip_min_game_time, DEFAULT_MIN_GAME_SECONDS
+                )
                 delay = max(0.0, min_seconds - elapsed)
                 app_state.auto_close_tasks[self.game_id] = asyncio.create_task(
                     schedule_auto_close(interaction.client, self.game_id, delay)
@@ -399,7 +402,9 @@ class RiskyRollView(BaseRiskyRollView):
                 )
                 return
 
-            min_seconds = app_state.min_game_seconds.get(state.guild_id)
+            min_seconds = effective_min_game_seconds(
+                app_state.min_game_seconds, state.guild_id, state.skip_min_game_time, DEFAULT_MIN_GAME_SECONDS
+            )
             if min_seconds:
                 elapsed = time.time() - state.created_at
                 remaining = math.ceil(min_seconds - elapsed)

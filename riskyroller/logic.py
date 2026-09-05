@@ -32,6 +32,25 @@ def deserialize_user_ids(raw: str | None) -> set[int]:
     return {int(part) for part in raw.split(",") if part}
 
 
+def effective_min_game_seconds(
+    configured: dict[int, int],
+    guild_id: int,
+    skip_min_game_time: bool,
+    default: int,
+) -> int:
+    """How long a round in *guild_id* must stay open before it can close.
+
+    One lookup for both close paths — the opener's Close Round button and the
+    auto-close that fires once enough players have rolled — so they cannot
+    disagree. A server that never set a value gets *default*; a server that
+    set 0 gets 0, which disables the minimum for both paths.
+    ``skip_min_game_time`` is the per-round opt-out and wins outright.
+    """
+    if skip_min_game_time:
+        return 0
+    return int(configured.get(guild_id, default))
+
+
 def run_tie_rolloff(
     tied_user_ids: list[int], pick_lowest: bool = False
 ) -> tuple[int, list[dict[int, int]]]:

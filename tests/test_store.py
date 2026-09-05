@@ -349,6 +349,12 @@ class StoreTests(unittest.TestCase):
 
     # --- min game time / max games per channel ---
 
+    def test_min_game_time_zero_is_stored_not_cleared(self) -> None:
+        run(self.store.set_min_game_time(200, 60))
+        run(self.store.set_min_game_time(200, 0))
+
+        self.assertEqual({200: 0}, run(self.store.load_min_game_times()))
+
     def test_set_and_load_max_games_per_channel(self) -> None:
         run(self.store.set_max_games_per_channel(200, 3))
 
