@@ -30,6 +30,13 @@ from .models import (
 log = logging.getLogger(__name__)
 
 
+async def _ephemeral(interaction: discord.Interaction, text: str) -> None:
+    if interaction.response.is_done():
+        await interaction.followup.send(text, ephemeral=True)
+    else:
+        await interaction.response.send_message(text, ephemeral=True)
+
+
 async def schedule_auto_close(client: discord.Client, game_id: str, delay: float) -> None:
     if delay > 0:
         await asyncio.sleep(delay)
@@ -700,26 +707,16 @@ class QuestionReplyModal(discord.ui.Modal, title="Reply"):
                 )
                 return
 
-            await interaction.response.defer(ephemeral=True)
-
             reply_content = build_question_reply_content(state, interaction.user.id, reply_text)
-            channel = await get_text_channel(interaction.client, state.channel_id)
-            if channel is None:
-                log.warning(
-                    "Could not resolve channel %s for question reply on message %s (guild %s, user %s).",
-                    state.channel_id,
-                    self.message_id,
-                    state.guild_id,
-                    interaction.user.id,
-                )
-                await interaction.followup.send(
-                    "Could not update the question message; your reply wasn't recorded — please try again.",
-                    ephemeral=True,
-                )
-                return
 
+            # Answer the modal by updating the message it was opened from. That
+            # goes through the interaction callback, which needs no channel
+            # permission at all — unlike resolving the channel and editing the
+            # message by id, which fails wherever the bot lacks View Channel
+            # (members-only channels are the common case) even though every
+            # button press there still works.
             try:
-                await channel.get_partial_message(self.message_id).edit(
+                await interaction.response.edit_message(
                     content=reply_content,
                     embed=None,
                     view=None,
@@ -727,20 +724,19 @@ class QuestionReplyModal(discord.ui.Modal, title="Reply"):
                 )
             except discord.NotFound:
                 await _clear_posted_question(self.message_id)
-                await interaction.followup.send(
-                    "The question message no longer exists.", ephemeral=True
-                )
+                await _ephemeral(interaction, "The question message no longer exists.")
                 return
-            except (discord.Forbidden, discord.HTTPException):
+            except discord.HTTPException:
                 log.exception("Failed to edit question message %s.", self.message_id)
-                await interaction.followup.send(
-                    "Could not update the question message; your reply wasn't recorded — please try again.",
-                    ephemeral=True,
+                # Hand the text back rather than losing it.
+                await _ephemeral(
+                    interaction,
+                    "Discord rejected the update, so your reply was not posted. Please try again. "
+                    f"Your reply was:\n> {reply_text}",
                 )
                 return
 
             await _clear_posted_question(self.message_id)
-
             await interaction.followup.send("Reply sent.", ephemeral=True)
 
 
