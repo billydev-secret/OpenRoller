@@ -48,3 +48,5 @@ DEBUG: bool = get_bool_env("DEBUG", default=False)
 SYNC_COMMANDS_ON_STARTUP: bool = get_bool_env("SYNC_COMMANDS_ON_STARTUP", default=True)
 DEFAULT_MIN_GAME_SECONDS: int = _int_env("DEFAULT_MIN_GAME_SECONDS", 1800)
 DEFAULT_MAX_GAMES_PER_CHANNEL: int = _int_env("DEFAULT_MAX_GAMES_PER_CHANNEL", 10)
+# Where /support sends people. Unset means this copy has no support server.
+SUPPORT_INVITE_URL: str | None = (os.getenv("SUPPORT_INVITE_URL") or "").strip() or None

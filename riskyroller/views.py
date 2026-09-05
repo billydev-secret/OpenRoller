@@ -9,15 +9,20 @@ import discord
 from . import state as app_state
 from .config import DEFAULT_MIN_GAME_SECONDS
 from .filters import contains_disallowed_content
-from .logic import REQUIRED_THREAD_PERMISSIONS, effective_min_game_seconds, missing_permissions
+from .logic import (
+    REQUIRED_CHANNEL_PERMISSIONS,
+    REQUIRED_THREAD_PERMISSIONS,
+    effective_min_game_seconds,
+    missing_permissions,
+)
 from .formatters import (
-    PERMISSION_CHECK_HINT,
     auto_close_hint,
     build_embed,
     build_how_to_play_content,
     build_pending_prompt_content,
     build_pending_question_summary,
     build_question_reply_content,
+    failure_reason,
     format_duration,
     format_user_mentions,
     get_text_channel,
@@ -41,18 +46,21 @@ log = logging.getLogger(__name__)
 
 PROMPT_GONE_TEXT = (
     "This question prompt is no longer active: the question was already asked, an admin reset "
-    "the channel, or it expired (prompts stay open for 7 days). Start a new round to play again."
+    "the channel, or it expired (prompts more than 7 days old are cleared when I restart). "
+    "Start a new round to play again."
 )
 REPLY_CLOSED_TEXT = (
     "This question is no longer open for a reply: it was already answered, cleared by an admin's "
-    "reset, or expired (questions stay open for 7 days)."
+    "reset, or expired (questions more than 7 days old are cleared when I restart). If you still "
+    "want to answer, just post your reply in the channel."
 )
 PROMPT_SETUP_FAILED_TEXT = (
     "This question prompt couldn't be set up, so it was cancelled. Start a new round with /risky_start."
 )
 ROUND_NO_PROMPT_TEXT = (
-    "The round ended, but I couldn't post the question prompt, so it ends without a question. "
-    f"Start a new round with /risky_start. {PERMISSION_CHECK_HINT}"
+    "The round is over, but I couldn't post the question prompt, so it ends without a question. "
+    "Start a new round with /risky_start. If it keeps happening, whoever hosts this bot can find "
+    "the error in its log."
 )
 
 
@@ -66,8 +74,14 @@ async def _ephemeral(interaction: discord.Interaction, text: str) -> None:
 
 def _round_over_text(game_id: str, consequence: str) -> str:
     text = f"This round has already ended, {consequence}. Start a new one with /risky_start."
-    if game_id in app_state.pending_questions or f"{game_id}:1" in app_state.pending_questions:
-        text += " Its question prompt is still open, waiting on the winner."
+    waiting: set[int] = set()
+    for key in (game_id, f"{game_id}:1"):
+        prompt = app_state.pending_questions.get(key)
+        if prompt is not None:
+            waiting |= prompt.allowed_questioners() - prompt.questioners_asked
+    if waiting:
+        who = join_names([f"<@{uid}>" for uid in sorted(waiting)])
+        text += f" Its question prompt is still open, waiting on {who}."
     return text
 
 
@@ -81,7 +95,12 @@ def _already_asked_text(state: PendingQuestionState) -> str:
     if waiting:
         who = join_names([f"<@{uid}>" for uid in waiting])
         return f"You've already sent your question — this prompt is now waiting on {who} to send theirs."
-    return "You've already sent your question for this round."
+    # A prompt whose every questioner has asked is popped at once, so this
+    # should be unreachable; if it ever shows, the prompt is stuck.
+    return (
+        "You've already sent your question — this prompt should have closed. "
+        "An admin can clear it with /risky_reset_state."
+    )
 
 
 def _not_recipient_text(state: PostedQuestionState) -> str:
@@ -89,12 +108,17 @@ def _not_recipient_text(state: PostedQuestionState) -> str:
     return f"Only {who} can reply to this question — it was asked of them."
 
 
-def _post_failure_text(what: str, text: str, button: str, interaction: discord.Interaction) -> str:
+def _post_failure_text(
+    what: str,
+    text: str,
+    button: str,
+    interaction: discord.Interaction,
+    required=REQUIRED_CHANNEL_PERMISSIONS,
+) -> str:
     """Why a post failed and what to do next, handing the typed text back."""
-    reason = permission_help(missing_permissions(interaction.app_permissions)) or PERMISSION_CHECK_HINT
     return (
         f"I couldn't post your {what} in this channel, so it was not sent — press **{button}** to try again. "
-        f"{reason}\nYour {what} was:\n> {text}"
+        f"{failure_reason(interaction.app_permissions, required)}\nYour {what} was:\n> {text}"
     )
 
 
@@ -377,9 +401,12 @@ class BaseRiskyRollView(discord.ui.View):
             log.exception("Unhandled error in %s (game %s)", type(self).__name__, self.game_id, exc_info=error)
         else:
             log.exception("Unhandled error in %s", type(self).__name__, exc_info=error)
+        # A press may have partly taken effect before the error; the
+        # follow-up refusals ("you already rolled", "already ended") tell
+        # the truth about that, so point the reader at them.
         msg = (
-            "Something went wrong on my side and that didn't go through — please try once more. "
-            f"{PERMISSION_CHECK_HINT} You can also report it via /support."
+            "Something went wrong on my side. Try once more — if I then say it's already done, your "
+            f"first press counted. {failure_reason(interaction.app_permissions)}"
         )
         try:
             await _ephemeral(interaction, msg)
@@ -412,8 +439,8 @@ class RiskyRollView(BaseRiskyRollView):
                 hint = auto_close_hint(state)
                 await _ephemeral(
                     interaction,
-                    f"You already rolled a **{state.rolls[interaction.user.id]}** this round — it's one roll per "
-                    f"player. Wait for the close to see how it lands.{' ' + hint if hint else ''}",
+                    f"You already rolled this round — your roll was **{state.rolls[interaction.user.id]}**. "
+                    f"It's one roll per player; wait for the close to see how it lands.{' ' + hint if hint else ''}",
                 )
                 return
 
@@ -422,7 +449,15 @@ class RiskyRollView(BaseRiskyRollView):
             # Cache the roller's name so the roster embed can show it as text
             # instead of a <@id> mention that some viewers can't resolve.
             app_state.display_names[interaction.user.id] = interaction.user.display_name
-            await app_state.store.save_round(state)
+
+            # From here the roll has counted. Anything that fails below is
+            # reported as exactly that, never as a roll that didn't happen.
+            save_failed = False
+            try:
+                await app_state.store.save_round(state)
+            except Exception:
+                log.exception("Failed to save the roll for game %s.", self.game_id)
+                save_failed = True
 
             log.info(
                 "Channel #%s: %s rolled %s",
@@ -431,7 +466,21 @@ class RiskyRollView(BaseRiskyRollView):
                 roll,
             )
 
-            await interaction.edit_original_response(embed=build_embed(state, interaction.guild), view=self)
+            try:
+                await interaction.edit_original_response(embed=build_embed(state, interaction.guild), view=self)
+            except discord.HTTPException:
+                log.exception("Failed to refresh the round message for game %s.", self.game_id)
+                await _ephemeral(
+                    interaction,
+                    f"Your roll of **{roll}** counted, but I couldn't refresh the round message — it will "
+                    "update on the next roll or at the close.",
+                )
+            if save_failed:
+                await _ephemeral(
+                    interaction,
+                    f"Your roll of **{roll}** counted for this round, but I couldn't save it to disk — it "
+                    "stands unless the bot restarts before the close.",
+                )
 
             if state.auto_close_players and len(state.rolls) >= state.auto_close_players:
                 task = app_state.auto_close_tasks.pop(self.game_id, None)
@@ -488,11 +537,16 @@ class RiskyRollView(BaseRiskyRollView):
                 remaining = math.ceil(min_seconds - elapsed)
                 if remaining > 0:
                     hint = auto_close_hint(state)
+                    origin = (
+                        "this server's minimum"
+                        if state.guild_id in app_state.min_game_seconds
+                        else "the default minimum"
+                    )
                     await _ephemeral(
                         interaction,
-                        f"This round can't be closed for another {format_duration(remaining)}: this server keeps "
-                        f"rounds open at least {format_duration(min_seconds)} so everyone gets a chance to roll."
-                        f"{' ' + hint if hint else ''} Admins can change the minimum with "
+                        f"This round can't be closed by hand for another {format_duration(remaining)}: rounds "
+                        f"stay open at least {format_duration(min_seconds)} ({origin}) so everyone gets a "
+                        f"chance to roll.{' ' + hint if hint else ''} Admins can change the minimum with "
                         "/risky_set_min_game_time; /risky_start_no_ping opens a round without one.",
                     )
                     return
@@ -502,8 +556,14 @@ class RiskyRollView(BaseRiskyRollView):
             if resolution.result_type == RoundResult.NOT_ENOUGH:
                 rolled = len(state.rolls)
                 hint = auto_close_hint(state)
-                leave = "Wait for another roll, or leave it open"
-                leave += f" — {hint[0].lower()}{hint[1:]}" if hint else "."
+                wait = "Wait for a roll" if rolled == 0 else "Wait for another roll"
+                if hint:
+                    leave = f"{wait}, or leave it open — {hint[0].lower()}{hint[1:]}"
+                else:
+                    leave = (
+                        f"{wait} — this round has no auto-close, so if nobody else rolls an admin can clear "
+                        "it with /risky_reset_state."
+                    )
                 await _ephemeral(
                     interaction,
                     "Can't close yet: at least 2 players must roll before a round can resolve, and "
@@ -525,15 +585,27 @@ class RiskyRollView(BaseRiskyRollView):
                 await interaction.response.edit_message(embed=build_embed(state, interaction.guild), view=closed_view)
             except discord.HTTPException:
                 log.exception("Failed to close round in #%s.", getattr(interaction.channel, "name", state.channel_id))
-                reason = permission_help(missing_permissions(interaction.app_permissions)) or PERMISSION_CHECK_HINT
                 await _ephemeral(
                     interaction,
                     "The round is closed, but I couldn't update its message or post the question prompt, so it "
-                    f"ends without a question. Start a new round with /risky_start. {reason}",
+                    f"ends without a question. Start a new round with /risky_start. "
+                    f"{failure_reason(interaction.app_permissions)}",
                 )
                 return
 
-            await _send_question_prompts_followup(interaction, self.game_id, state, resolution)
+            try:
+                await _send_question_prompts_followup(interaction, self.game_id, state, resolution)
+            except Exception:
+                log.exception("Close: failed to send the question prompt for game %s.", self.game_id)
+                # The round itself is over and its message already says so; the
+                # winner needs to hear there is no prompt coming, so this one
+                # is public rather than an apology only the closer can see.
+                try:
+                    await interaction.followup.send(
+                        ROUND_NO_PROMPT_TEXT, allowed_mentions=discord.AllowedMentions.none()
+                    )
+                except discord.HTTPException:
+                    log.exception("Close: also failed to post the no-prompt notice for game %s.", self.game_id)
 
 
 class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
@@ -608,24 +680,37 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 all_mentions = format_user_mentions(state.participant_user_ids)
                 content = f"{all_mentions}\n<@{asker_id}> asks:\n{question_text}"
 
-                try:
-                    if thread is not None:
+                posted_in_thread = False
+                if thread is not None:
+                    try:
                         await thread.send(
                             content=content,
                             allowed_mentions=discord.AllowedMentions(users=True),
                         )
-                    else:
+                        posted_in_thread = True
+                    except discord.HTTPException:
+                        # Typically Send Messages in Threads is missing while
+                        # Create Public Threads is not. Fall back to the
+                        # channel rather than fail the question.
+                        log.exception("Failed to post 69 question in its thread for game %s.", self.game_id)
+                        thread_failed = True
+                if not posted_in_thread:
+                    try:
                         await interaction.followup.send(
                             content=content,
                             allowed_mentions=discord.AllowedMentions(users=True),
                             ephemeral=False,
                         )
-                except discord.HTTPException:
-                    log.exception("Failed to post 69 question for game %s.", self.game_id)
-                    await _ephemeral(
-                        interaction, _post_failure_text("question", question_text, "Ask Question", interaction)
-                    )
-                    return
+                    except discord.HTTPException:
+                        log.exception("Failed to post 69 question for game %s.", self.game_id)
+                        await _ephemeral(
+                            interaction,
+                            _post_failure_text(
+                                "question", question_text, "Ask Question", interaction,
+                                REQUIRED_CHANNEL_PERMISSIONS + REQUIRED_THREAD_PERMISSIONS,
+                            ),
+                        )
+                        return
 
                 app_state.pending_questions.pop(self.game_id, None)
                 await app_state.store.delete_pending_question(self.game_id)
@@ -634,16 +719,18 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                     state,
                     build_pending_question_summary(state, question_text, asker_id),
                 )
-                if thread is not None:
+                if posted_in_thread:
                     done = "Question posted in a thread."
                 elif thread_failed:
                     # The question went out, just not where it should have; say
                     # why so the next round can go right.
                     missing = missing_permissions(interaction.app_permissions, REQUIRED_THREAD_PERMISSIONS)
-                    done = "I couldn't open a thread here, so the question is posted in the channel instead. " + (
+                    done = "I couldn't use a thread here, so the question is posted in the channel instead. " + (
                         permission_help(missing)
                         if missing
-                        else "An admin should check I can create public threads and send messages in them."
+                        else "My thread permissions look right — Discord refused the thread, which usually "
+                        "means the prompt message already has one, was deleted, or this channel is at its "
+                        "thread limit."
                     )
                 else:
                     done = "Question posted."

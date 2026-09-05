@@ -47,7 +47,7 @@
 | `/risky_set_max_games <count>` | Set how many rounds can be open in one channel at a time (0 restores the default of 10). | Administrator |
 | `/risky_reset_state` | Clear active rounds and pending prompts in the current channel. | Administrator |
 | `/invite` | Get an invite link to add the bot to your server. | Anyone |
-| `/support` | Get a link to the support Discord server. | Anyone |
+| `/support` | Get the support server link, if the host has set `SUPPORT_INVITE_URL`. | Anyone |
 
 ## Requirements
 - Python 3.10 or newer.
@@ -82,6 +82,7 @@ cp .env.example .env               # Windows: copy .env.example .env
 - `GUILD_ID` (optional): the numeric server ID used by `DEBUG` mode. Leave it unset otherwise.
 - `DEFAULT_MIN_GAME_SECONDS` (optional): how long a round must stay open before it can close — by the opener's Close button or by the player-threshold auto-close — for servers that haven't set their own with `/risky_set_min_game_time`. Defaults to `1800`. `/risky_start_no_ping` skips the minimum for that round.
 - `DEFAULT_MAX_GAMES_PER_CHANNEL` (optional): open rounds allowed per channel, for servers that haven't set their own with `/risky_set_max_games`. Defaults to `10`.
+- `SUPPORT_INVITE_URL` (optional): the invite `/support` hands out. Unset means this copy has no support server, and `/support` says so.
 
 Booleans accept `1`/`true`/`yes`/`on` (case-insensitive); anything else is false.
 

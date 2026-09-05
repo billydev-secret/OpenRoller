@@ -4,6 +4,7 @@ from collections.abc import Callable
 import discord
 
 from . import state as app_state
+from .logic import REQUIRED_CHANNEL_PERMISSIONS, missing_permissions
 from .models import PendingQuestionState, PostedQuestionState, PromptKind, RiskyRollState
 
 log = logging.getLogger(__name__)
@@ -68,39 +69,55 @@ def join_names(items: list[str]) -> str:
 
 
 def auto_close_hint(state: RiskyRollState) -> str:
-    """How this round ends on its own, or '' when it only ends by hand."""
+    """How this round ends on its own, or '' when it only ends by hand.
+
+    Once the player threshold is met the timer has been replaced by the
+    minimum-time countdown, so say that rather than promise a condition that
+    has already happened. The minutes deadline is a relative Discord timestamp
+    (``<t:…:R>`` renders as "in 43 minutes" for each reader) because it counts
+    from when the round opened, not from now.
+    """
+    if state.auto_close_players and len(state.rolls) >= state.auto_close_players:
+        return "Enough players have rolled — it closes itself once the minimum time is up."
     parts = []
     if state.auto_close_players:
         parts.append(f"once {state.auto_close_players} players have rolled")
     if state.auto_close_minutes:
-        parts.append(f"after {format_duration(state.auto_close_minutes * 60)}")
+        parts.append(f"<t:{int(state.created_at + state.auto_close_minutes * 60)}:R>")
     if not parts:
         return ""
     tail = ", whichever comes first" if len(parts) == 2 else ""
     return f"It auto-closes {' or '.join(parts)}{tail}."
 
 
-# Where a server admin grants the bot a permission. Kept as one sentence so
-# every failure that comes down to permissions gives the same directions.
-PERMISSION_FIX_HINT = (
-    "An admin can grant it under Server Settings → Roles → my role, or for this channel alone "
-    "under Edit Channel → Permissions by adding my role — a channel hidden from the everyone "
-    "role needs the second."
-)
-
-# For failures that may or may not be permissions: what to check, without
-# claiming to know.
-PERMISSION_CHECK_HINT = (
-    "If it keeps happening, an admin should check I have View Channel, Send Messages and "
-    "Embed Links in this channel."
-)
-
-
 def permission_help(missing: list[str]) -> str:
-    """Name what's missing and where to grant it; '' when nothing is missing."""
+    """Name what's missing and where to grant it; '' when nothing is missing.
+
+    One sentence for every failure that comes down to permissions, so the
+    directions are always the same.
+    """
     if not missing:
         return ""
-    return f"I'm missing {join_names(missing)} in this channel. {PERMISSION_FIX_HINT}"
+    pronoun = "it" if len(missing) == 1 else "them"
+    return (
+        f"I'm missing {join_names(missing)} in this channel. An admin can grant {pronoun} under "
+        "Server Settings → Roles → my role, or for this channel alone under Edit Channel → "
+        "Permissions by adding my role — a channel hidden from the everyone role needs the second."
+    )
+
+
+# When a failure was not permissions, say so instead of sending an admin to
+# check something that is fine; the log is the only remaining lead.
+NOT_PERMISSIONS_TEXT = (
+    "My permissions here look right, so this was most likely a passing Discord error. "
+    "If it keeps happening, whoever hosts this bot can find the details in its log."
+)
+
+
+def failure_reason(app_permissions, required=REQUIRED_CHANNEL_PERMISSIONS) -> str:
+    """Name the missing permission, or say plainly that permissions weren't it."""
+    missing = missing_permissions(app_permissions, required)
+    return permission_help(missing) if missing else NOT_PERMISSIONS_TEXT
 
 
 def format_lowest_rolloff_note(

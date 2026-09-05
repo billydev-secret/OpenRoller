@@ -14,6 +14,7 @@ from riskyroller.formatters import (
     build_question_reply_embed,
     build_rolloff_embed,
     auto_close_hint,
+    failure_reason,
     format_duration,
     format_lowest_rolloff_note,
     join_names,
@@ -587,27 +588,52 @@ class RefusalCopyHelperTests(unittest.TestCase):
         self.assertEqual("a, b and c", join_names(["a", "b", "c"]))
 
     def test_auto_close_hint_states_the_real_settings(self) -> None:
-        both = RiskyRollState(channel_id=1, guild_id=2, opener_id=3, auto_close_players=25, auto_close_minutes=120)
+        opened = 1_000_000.0
+        both = RiskyRollState(
+            channel_id=1, guild_id=2, opener_id=3, auto_close_players=25, auto_close_minutes=120, created_at=opened
+        )
         players = RiskyRollState(channel_id=1, guild_id=2, opener_id=3, auto_close_players=4)
-        minutes = RiskyRollState(channel_id=1, guild_id=2, opener_id=3, auto_close_minutes=1)
+        minutes = RiskyRollState(channel_id=1, guild_id=2, opener_id=3, auto_close_minutes=1, created_at=opened)
         neither = RiskyRollState(channel_id=1, guild_id=2, opener_id=3)
 
+        # The minutes deadline counts from when the round opened, so it is a
+        # relative Discord timestamp rather than a duration that goes stale.
         self.assertEqual(
-            "It auto-closes once 25 players have rolled or after 2 hours, whichever comes first.",
+            f"It auto-closes once 25 players have rolled or <t:{int(opened) + 7200}:R>, whichever comes first.",
             auto_close_hint(both),
         )
         self.assertEqual("It auto-closes once 4 players have rolled.", auto_close_hint(players))
-        self.assertEqual("It auto-closes after 1 minute.", auto_close_hint(minutes))
+        self.assertEqual(f"It auto-closes <t:{int(opened) + 60}:R>.", auto_close_hint(minutes))
         self.assertEqual("", auto_close_hint(neither))
 
-    def test_permission_help_names_the_permission_and_where_to_grant_it(self) -> None:
-        text = permission_help(["View Channel"])
+    def test_auto_close_hint_after_the_threshold_is_met(self) -> None:
+        state = RiskyRollState(
+            channel_id=1, guild_id=2, opener_id=3, auto_close_players=2, auto_close_minutes=120,
+            rolls={10: 50, 20: 60},
+        )
 
-        self.assertIn("I'm missing View Channel in this channel.", text)
-        self.assertIn("Server Settings", text)
-        self.assertIn("Edit Channel", text)
+        self.assertEqual(
+            "Enough players have rolled — it closes itself once the minimum time is up.",
+            auto_close_hint(state),
+        )
+
+    def test_permission_help_names_the_permission_and_where_to_grant_it(self) -> None:
+        one = permission_help(["View Channel"])
+        three = permission_help(["View Channel", "Send Messages", "Embed Links"])
+
+        self.assertIn("I'm missing View Channel in this channel. An admin can grant it under", one)
+        self.assertIn("Server Settings", one)
+        self.assertIn("Edit Channel", one)
+        self.assertIn("I'm missing View Channel, Send Messages and Embed Links in this channel. An admin can grant them", three)
         self.assertEqual("", permission_help([]))
-        self.assertIn("View Channel, Send Messages and Embed Links", permission_help(["View Channel", "Send Messages", "Embed Links"]))
+
+    def test_failure_reason_does_not_blame_permissions_the_bot_has(self) -> None:
+        held = discord.Permissions(view_channel=True, send_messages=True, embed_links=True)
+        lacking = discord.Permissions(send_messages=True, embed_links=True)
+
+        self.assertIn("permissions here look right", failure_reason(held))
+        self.assertNotIn("Server Settings", failure_reason(held))
+        self.assertIn("I'm missing View Channel", failure_reason(lacking))
 
 
 class QuestionReplyEmbedTests(unittest.TestCase):

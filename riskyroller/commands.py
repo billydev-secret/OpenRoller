@@ -6,8 +6,8 @@ import discord
 from discord import app_commands
 
 from . import state as app_state
-from .config import DEFAULT_MAX_GAMES_PER_CHANNEL
-from .formatters import PERMISSION_CHECK_HINT, build_embed, format_duration, permission_help
+from .config import DEFAULT_MAX_GAMES_PER_CHANNEL, SUPPORT_INVITE_URL
+from .formatters import build_embed, format_duration, join_names, permission_help
 from .invite import invite_url
 from .logic import missing_start_permissions
 from .models import RiskyRollState
@@ -23,9 +23,11 @@ NOT_IN_SERVER_CHANNEL_TEXT = (
     "you want the round."
 )
 NOT_IN_SERVER_TEXT = "This setting belongs to a server — run the command inside the server you want to change."
+# Reached only after the round message itself posted, so permissions are not
+# the problem; the log is the only lead.
 SETUP_FAILED_TEXT = (
     "Risky Rolls couldn't finish setting up this round, so it was cancelled and nothing is open. "
-    f"Try /risky_start again. {PERMISSION_CHECK_HINT}"
+    "Try starting it again. If it keeps happening, whoever hosts this bot can find the error in its log."
 )
 
 
@@ -51,9 +53,11 @@ async def _start_game(
 
     missing = missing_start_permissions(interaction.app_permissions)
     if missing:
+        command = interaction.command.qualified_name if interaction.command else "risky_start"
         await _send_ephemeral(
             interaction,
-            f"I can't run a round here. {permission_help(missing)} Then try /risky_start again.",
+            f"I can't run a round here. {permission_help(missing)} Once that's done, /{command} will work "
+            "in this channel.",
         )
         return
 
@@ -66,9 +70,10 @@ async def _start_game(
         if active_in_channel >= cap:
             await _send_ephemeral(
                 interaction,
-                f"This channel already has {cap} open round{'s' if cap != 1 else ''}, the most this server "
-                "allows at once. Close one (its opener or an admin can press **Close Round**), wait for one "
-                "to auto-close, or ask an admin to raise the limit with /risky_set_max_games.",
+                f"This channel already has {active_in_channel} open round{'s' if active_in_channel != 1 else ''}; "
+                f"this server allows {cap} at once. Wait for one to auto-close, have its opener press "
+                "**Close Round** once two players have rolled (and any minimum time has passed), or ask an "
+                "admin to clear the channel with /risky_reset_state or raise the limit with /risky_set_max_games.",
             )
             return
 
@@ -194,7 +199,8 @@ def setup(bot: "Bot") -> None:
 
         await _send_ephemeral(
             interaction,
-            f"Ping role set to {role.mention}. Every /risky_start will mention it; /risky_start_no_ping won't.",
+            f"Ping role set to {role.mention}. Every /risky_start will mention it (its members are only "
+            "notified if the role is mentionable or I have Mention Everyone); /risky_start_no_ping won't.",
         )
 
     @bot.tree.command(
@@ -230,7 +236,8 @@ def setup(bot: "Bot") -> None:
             await _send_ephemeral(
                 interaction,
                 f"Minimum game time set to {format_duration(seconds)}. Rounds opened with /risky_start can't "
-                "be closed sooner, by hand or by auto-close; /risky_start_no_ping skips it.",
+                "be closed by hand, or by the player-count auto-close, any sooner; a minutes auto-close "
+                "still fires on time, and /risky_start_no_ping skips the minimum.",
             )
 
     @bot.tree.command(
@@ -331,10 +338,21 @@ def setup(bot: "Bot") -> None:
                 app_state.posted_questions.pop(message_id, None)
                 await app_state.store.delete_posted_question(message_id)
 
+            def plural(n: int, noun: str) -> str:
+                return f"{n} {noun}{'s' if n != 1 else ''}"
+
+            parts = [
+                text
+                for count, text in (
+                    (len(game_ids), f"closed {plural(len(game_ids), 'round')}"),
+                    (len(question_ids), f"cancelled {plural(len(question_ids), 'question prompt')}"),
+                    (len(posted_message_ids), f"cleared {plural(len(posted_message_ids), 'unanswered question')}"),
+                )
+                if count
+            ]
             await _send_ephemeral(
                 interaction,
-                f"Reset this channel: closed {len(game_ids)} round(s), cancelled {len(question_ids)} question "
-                f"prompt(s) and {len(posted_message_ids)} unanswered question(s). Start a new round with /risky_start.",
+                f"Reset this channel: {join_names(parts)}. Start a new round with /risky_start.",
             )
 
     @bot.tree.command(
@@ -356,13 +374,17 @@ def setup(bot: "Bot") -> None:
 
     @bot.tree.command(
         name="support",
-        description="Get a link to the Risky Rolls support Discord server",
+        description="Get the support server link, if this bot's host has set one",
     )
     async def support(interaction: discord.Interaction):
-        await interaction.response.send_message(
-            "[Join the Risky Rolls support server](https://discord.gg/7gfbYYkH)",
-            ephemeral=True,
-        )
+        if SUPPORT_INVITE_URL is None:
+            await _send_ephemeral(
+                interaction,
+                "This copy of Risky Rolls has no support server set up. Whoever hosts it can add one with "
+                "the SUPPORT_INVITE_URL setting; until then, questions go to your server's admins.",
+            )
+            return
+        await _send_ephemeral(interaction, f"[Join the Risky Rolls support server]({SUPPORT_INVITE_URL})")
 
     @bot.tree.error
     async def on_app_command_error(
@@ -372,17 +394,14 @@ def setup(bot: "Bot") -> None:
         if isinstance(error, app_commands.MissingPermissions):
             await _send_ephemeral(
                 interaction,
-                "That command is for server administrators — it changes this server's Risky Rolls settings. "
+                "That command is for server administrators — it changes how Risky Rolls runs on this server. "
                 "Ask an admin to run it.",
             )
-            return
-        if isinstance(error, app_commands.NoPrivateMessage):
-            await _send_ephemeral(interaction, NOT_IN_SERVER_CHANNEL_TEXT)
             return
 
         log.exception("Unhandled app command error", exc_info=error)
         await _send_ephemeral(
             interaction,
-            "That command failed on my side and nothing was changed — try it again. If it keeps failing, "
-            "whoever hosts this bot can find the error in its log, or report it via /support.",
+            "That command hit an error on my side — try it again. If it keeps failing, whoever hosts this "
+            "bot can find the details in its log.",
         )
