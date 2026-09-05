@@ -2,6 +2,8 @@ import unittest
 import uuid
 from unittest.mock import Mock, patch
 
+import discord
+
 from riskyroller import state as app_state
 from riskyroller.formatters import (
     NOTICE_EMBED_COLOR,
@@ -13,7 +15,7 @@ from riskyroller.formatters import (
     build_rolloff_embed,
     format_lowest_rolloff_note,
 )
-from riskyroller.logic import effective_min_game_seconds, run_tie_rolloff
+from riskyroller.logic import effective_min_game_seconds, missing_start_permissions, run_tie_rolloff
 from riskyroller.models import (
     PendingQuestionState,
     PostedQuestionState,
@@ -523,6 +525,29 @@ class MinGameTimeTests(unittest.TestCase):
     def test_skip_flag_wins_outright(self) -> None:
         self.assertEqual(0, effective_min_game_seconds({1: 60}, 1, True, 1800))
         self.assertEqual(0, effective_min_game_seconds({}, 1, True, 1800))
+
+
+class StartPermissionTests(unittest.TestCase):
+    def test_all_present_is_empty(self) -> None:
+        perms = discord.Permissions(view_channel=True, send_messages=True, embed_links=True)
+
+        self.assertEqual([], missing_start_permissions(perms))
+
+    def test_view_channel_is_reported_first(self) -> None:
+        perms = discord.Permissions(send_messages=True, embed_links=True)
+
+        self.assertEqual(["View Channel"], missing_start_permissions(perms))
+
+    def test_everything_missing_lists_all_three(self) -> None:
+        self.assertEqual(
+            ["View Channel", "Send Messages", "Embed Links"],
+            missing_start_permissions(discord.Permissions.none()),
+        )
+
+    def test_unrelated_permissions_do_not_matter(self) -> None:
+        perms = discord.Permissions(view_channel=True, send_messages=True, embed_links=True, administrator=False)
+
+        self.assertEqual([], missing_start_permissions(perms))
 
 
 class QuestionReplyEmbedTests(unittest.TestCase):

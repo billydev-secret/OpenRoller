@@ -32,6 +32,29 @@ def deserialize_user_ids(raw: str | None) -> set[int]:
     return {int(part) for part in raw.split(",") if part}
 
 
+# What a round needs from the bot in the channel it runs in. View Channel
+# comes first because without it every button still works (interactions do
+# not need it) while everything the bot does on its own — the auto-close
+# prompt, disabling old prompts — quietly fails.
+REQUIRED_CHANNEL_PERMISSIONS: tuple[tuple[str, str], ...] = (
+    ("view_channel", "View Channel"),
+    ("send_messages", "Send Messages"),
+    ("embed_links", "Embed Links"),
+)
+
+
+def missing_start_permissions(app_permissions) -> list[str]:
+    """Names of the permissions a round needs that *app_permissions* lacks.
+
+    Takes ``interaction.app_permissions`` — Discord's own computation of what
+    the bot may do where the command was used. Checking the channel object
+    instead is unreliable: for a channel the bot cannot see it is built from
+    the interaction's partial payload, which carries no overwrites, so it
+    reports role permissions and misses a channel-level deny.
+    """
+    return [label for attr, label in REQUIRED_CHANNEL_PERMISSIONS if not getattr(app_permissions, attr)]
+
+
 def effective_min_game_seconds(
     configured: dict[int, int],
     guild_id: int,

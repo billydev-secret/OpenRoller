@@ -8,6 +8,7 @@ from discord import app_commands
 from . import state as app_state
 from .config import DEFAULT_MAX_GAMES_PER_CHANNEL
 from .formatters import build_embed
+from .logic import missing_start_permissions
 from .models import RiskyRollState
 from .views import RiskyRollView, disable_pending_question_message, disable_round_message, schedule_auto_close
 
@@ -36,19 +37,11 @@ async def _start_game(
         await _send_ephemeral(interaction, "This command can only be used in a server channel.")
         return
 
-    me = interaction.guild.me
-    perms = interaction.channel.permissions_for(me)
-    missing = [
-        name for allowed, name in [
-            (perms.send_messages, "Send Messages"),
-            (perms.embed_links, "Embed Links"),
-        ]
-        if not allowed
-    ]
+    missing = missing_start_permissions(interaction.app_permissions)
     if missing:
         await interaction.response.send_message(
-            f"I'm missing permissions in this channel: {', '.join(missing)}. "
-            "Please fix my permissions before starting a round.",
+            f"I can't run a round here — I'm missing {', '.join(missing)} in this channel. "
+            "An admin can grant it to my role on this channel or its category, then try again.",
             ephemeral=True,
         )
         return
@@ -323,6 +316,7 @@ def setup(bot: "Bot") -> None:
         url = discord.utils.oauth_url(
             interaction.client.user.id,
             permissions=discord.Permissions(
+                view_channel=True,
                 send_messages=True,
                 embed_links=True,
                 create_public_threads=True,

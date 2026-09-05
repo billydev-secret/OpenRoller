@@ -97,6 +97,7 @@ The database runs in WAL mode, so `-wal` and `-shm` files sit next to the `.sqli
 
 ## Operational Notes
 - Slash commands are guild-only.
+- In the channel a round runs in, the bot needs **View Channel**, **Send Messages** and **Embed Links**; `/risky_start` refuses and names whatever is missing. View Channel matters most: without it the buttons still work but the bot cannot post the prompt when a round auto-closes. Members-only channels that hide from `@everyone` need the bot's role added explicitly.
 - No privileged Discord intents are currently enabled.
 - State cleanup can be forced per-channel with `/risky_reset_state`.
 
