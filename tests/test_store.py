@@ -347,6 +347,57 @@ class StoreTests(unittest.TestCase):
 
         self.assertEqual({1: 10, 2: 20}, loaded)
 
+    # --- min game time / max games per channel ---
+
+    def test_set_and_load_max_games_per_channel(self) -> None:
+        run(self.store.set_max_games_per_channel(200, 3))
+
+        self.assertEqual({200: 3}, run(self.store.load_max_games_per_channel()))
+
+    def test_set_max_games_per_channel_none_clears(self) -> None:
+        run(self.store.set_max_games_per_channel(200, 3))
+        run(self.store.set_max_games_per_channel(200, None))
+
+        self.assertEqual({}, run(self.store.load_max_games_per_channel()))
+
+    def test_guild_settings_columns_are_independent(self) -> None:
+        run(self.store.set_ping_role(200, 999))
+        run(self.store.set_min_game_time(200, 60))
+        run(self.store.set_max_games_per_channel(200, 2))
+
+        self.assertEqual({200: 999}, run(self.store.load_ping_roles()))
+        self.assertEqual({200: 60}, run(self.store.load_min_game_times()))
+        self.assertEqual({200: 2}, run(self.store.load_max_games_per_channel()))
+
+    def test_delete_guild_data_clears_settings(self) -> None:
+        run(self.store.set_ping_role(200, 999))
+        run(self.store.set_max_games_per_channel(200, 2))
+        run(self.store.set_ping_role(201, 1))
+
+        run(self.store.delete_guild_data(200))
+
+        self.assertEqual({201: 1}, run(self.store.load_ping_roles()))
+        self.assertEqual({}, run(self.store.load_max_games_per_channel()))
+
+    def test_legacy_guild_settings_table_gains_new_columns(self) -> None:
+        fd, path = tempfile.mkstemp(suffix=".sqlite3")
+        self.addCleanup(os.unlink, path)
+        os.close(fd)
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                "CREATE TABLE guild_settings (guild_id INTEGER PRIMARY KEY, ping_role_id INTEGER)"
+            )
+            conn.execute("INSERT INTO guild_settings (guild_id, ping_role_id) VALUES (7, 8)")
+        store = StateStore(path)
+        run(store.initialize())
+
+        run(store.set_min_game_time(7, 30))
+        run(store.set_max_games_per_channel(7, 4))
+
+        self.assertEqual({7: 8}, run(store.load_ping_roles()))
+        self.assertEqual({7: 30}, run(store.load_min_game_times()))
+        self.assertEqual({7: 4}, run(store.load_max_games_per_channel()))
+
     # --- sweeps ---
 
     def _pending(self, game_id: str, created_at: float) -> PendingQuestionState:

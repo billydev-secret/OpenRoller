@@ -44,6 +44,7 @@
 | `/risky_start_no_ping` | Open a new round without pinging and without a minimum game time. | Server members |
 | `/risky_set_ping <role>` | Set the role pinged when a new round starts. | Administrator |
 | `/risky_set_min_game_time <seconds>` | Set the minimum time before a round can be manually closed (0 disables). | Administrator |
+| `/risky_set_max_games <count>` | Set how many rounds can be open in one channel at a time (0 restores the default of 10). | Administrator |
 | `/risky_reset_state` | Clear active rounds and pending prompts in the current channel. | Administrator |
 | `/risky_showcase` | Post sample game flows for screenshots — non-functional. | Administrator |
 | `/invite` | Get an invite link to add the bot to your server. | Anyone |

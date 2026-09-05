@@ -33,15 +33,24 @@ class Bot(discord.Client):
         swept = await app_state.store.sweep_old_pending_questions(QUESTION_TTL_SECONDS)
         if swept:
             log.info("Swept %d pending_questions older than %d days.", swept, QUESTION_TTL_SECONDS // 86400)
-        ping_roles, min_game_times, active_rounds, pending_questions, posted_questions = await asyncio.gather(
+        (
+            ping_roles,
+            min_game_times,
+            max_games,
+            active_rounds,
+            pending_questions,
+            posted_questions,
+        ) = await asyncio.gather(
             app_state.store.load_ping_roles(),
             app_state.store.load_min_game_times(),
+            app_state.store.load_max_games_per_channel(),
             app_state.store.load_active_rounds(),
             app_state.store.load_pending_questions(),
             app_state.store.load_posted_questions(),
         )
         app_state.ping_roles.update(ping_roles)
         app_state.min_game_seconds.update(min_game_times)
+        app_state.max_games_per_channel.update(max_games)
 
         for state in active_rounds:
             if state.message_id is not None:
@@ -114,6 +123,7 @@ class Bot(discord.Client):
 
         app_state.ping_roles.pop(guild_id, None)
         app_state.min_game_seconds.pop(guild_id, None)
+        app_state.max_games_per_channel.pop(guild_id, None)
 
         for game_id in [gid for gid, s in app_state.active_games.items() if s.guild_id == guild_id]:
             task = app_state.auto_close_tasks.pop(game_id, None)

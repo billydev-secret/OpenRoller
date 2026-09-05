@@ -8,8 +8,6 @@ from .models import PendingQuestionState, PostedQuestionState, PromptKind, Risky
 
 log = logging.getLogger(__name__)
 
-MAX_GAMES_PER_CHANNEL = 10
-
 
 class StateStore:
     def __init__(self, path: str):
@@ -68,6 +66,8 @@ class StateStore:
                 gs_columns = {row["name"] for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
                 if "min_game_seconds" not in gs_columns:
                     conn.execute("ALTER TABLE guild_settings ADD COLUMN min_game_seconds INTEGER")
+                if "max_games_per_channel" not in gs_columns:
+                    conn.execute("ALTER TABLE guild_settings ADD COLUMN max_games_per_channel INTEGER")
 
             if "posted_questions" in existing_tables:
                 pq_columns = {row["name"] for row in conn.execute("PRAGMA table_info(posted_questions)").fetchall()}
@@ -79,7 +79,8 @@ class StateStore:
                 CREATE TABLE IF NOT EXISTS guild_settings (
                     guild_id INTEGER PRIMARY KEY,
                     ping_role_id INTEGER,
-                    min_game_seconds INTEGER
+                    min_game_seconds INTEGER,
+                    max_games_per_channel INTEGER
                 );
 
                 CREATE TABLE IF NOT EXISTS active_rounds (
@@ -185,6 +186,31 @@ class StateStore:
 
     async def load_min_game_times(self) -> dict[int, int]:
         return await asyncio.to_thread(self._load_min_game_times)
+
+    def _set_max_games_per_channel(self, guild_id: int, cap: int | None) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO guild_settings (guild_id, max_games_per_channel)
+                VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET max_games_per_channel = excluded.max_games_per_channel
+                """,
+                (guild_id, cap),
+            )
+
+    async def set_max_games_per_channel(self, guild_id: int, cap: int | None) -> None:
+        await asyncio.to_thread(self._set_max_games_per_channel, guild_id, cap)
+
+    def _load_max_games_per_channel(self) -> dict[int, int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT guild_id, max_games_per_channel FROM guild_settings "
+                "WHERE max_games_per_channel IS NOT NULL"
+            ).fetchall()
+        return {int(row["guild_id"]): int(row["max_games_per_channel"]) for row in rows}
+
+    async def load_max_games_per_channel(self) -> dict[int, int]:
+        return await asyncio.to_thread(self._load_max_games_per_channel)
 
     def _save_round(self, state: RiskyRollState) -> None:
         with self._connect() as conn:

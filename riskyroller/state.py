@@ -12,6 +12,7 @@ pending_questions: dict[str, PendingQuestionState] = {}
 posted_questions: dict[int, PostedQuestionState] = {}
 ping_roles: dict[int, int] = {}
 min_game_seconds: dict[int, int] = {}
+max_games_per_channel: dict[int, int] = {}
 auto_close_tasks: dict[str, asyncio.Task] = {}
 
 # user_id -> display name, captured when a player rolls so the roster embed can
