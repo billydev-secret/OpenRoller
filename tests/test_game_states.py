@@ -1,7 +1,8 @@
 import unittest
 import uuid
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+from riskyroller import state as app_state
 from riskyroller.formatters import (
     NOTICE_EMBED_COLOR,
     build_embed,
@@ -10,6 +11,7 @@ from riskyroller.formatters import (
     build_pending_question_summary,
     build_question_reply_embed,
     build_rolloff_embed,
+    format_lowest_rolloff_note,
 )
 from riskyroller.logic import run_tie_rolloff
 from riskyroller.models import (
@@ -437,6 +439,76 @@ class GameStatePresentationTests(unittest.TestCase):
         self.assertEqual("Round 2", embed.fields[1].name)
         self.assertIn("Rolloff Winner", embed.fields[2].name)
         self.assertEqual("<@1>", embed.fields[2].value)
+
+
+class RosterNameTests(unittest.TestCase):
+    def setUp(self) -> None:
+        app_state.display_names.clear()
+        self.addCleanup(app_state.display_names.clear)
+
+    def closed_state(self) -> RiskyRollState:
+        return RiskyRollState(
+            channel_id=1,
+            guild_id=2,
+            opener_id=3,
+            rolls={44: 80, 55: 20},
+            is_open=False,
+            highest_user=44,
+            lowest_user=55,
+        )
+
+    def test_roster_and_result_use_cached_display_names(self) -> None:
+        app_state.display_names.update({44: "Alice", 55: "Bob"})
+
+        embed = build_embed(self.closed_state())
+
+        self.assertIn("**80** — Alice", embed.fields[0].value or "")
+        self.assertIn("**20** — Bob", embed.fields[0].value or "")
+        self.assertIn("**Asks:** Alice", embed.fields[1].value or "")
+        self.assertIn("**Answers:** Bob", embed.fields[1].value or "")
+
+    def test_unknown_player_falls_back_to_a_mention(self) -> None:
+        app_state.display_names[44] = "Alice"
+
+        embed = build_embed(self.closed_state())
+
+        self.assertIn("**Asks:** Alice", embed.fields[1].value or "")
+        self.assertIn("**Answers:** <@55>", embed.fields[1].value or "")
+
+    def test_live_guild_member_wins_and_is_memoised(self) -> None:
+        app_state.display_names[44] = "Old Name"
+        member = Mock()
+        member.display_name = "Live Alice"
+        guild = Mock()
+        guild.get_member.side_effect = lambda uid: member if uid == 44 else None
+
+        embed = build_embed(self.closed_state(), guild)
+
+        self.assertIn("**Asks:** Live Alice", embed.fields[1].value or "")
+        self.assertIn("**Answers:** <@55>", embed.fields[1].value or "")
+        self.assertEqual("Live Alice", app_state.display_names[44])
+
+    def test_display_name_markdown_is_escaped(self) -> None:
+        app_state.display_names[44] = "_al*ice_"
+
+        embed = build_embed(self.closed_state())
+
+        self.assertIn("\\_al\\*ice\\_", embed.fields[1].value or "")
+
+    def test_rolloff_note_uses_the_name_resolver(self) -> None:
+        app_state.display_names.update({44: "Alice", 55: "Bob"})
+        state = self.closed_state()
+        state.rolls = {44: 80, 55: 80, 66: 20}
+        state.lowest_user = 66
+        state.highest_tie_user_ids = {44, 55}
+
+        embed = build_embed(state)
+
+        self.assertIn("Alice, Bob → Alice", embed.fields[1].value or "")
+
+    def test_format_lowest_rolloff_note_defaults_to_mentions(self) -> None:
+        self.assertEqual("<@1>, <@2> → <@2>", format_lowest_rolloff_note({1, 2}, 2))
+        self.assertEqual("A, B → B", format_lowest_rolloff_note({1, 2}, 2, {1: "A", 2: "B"}.__getitem__))
 
 
 class QuestionReplyEmbedTests(unittest.TestCase):

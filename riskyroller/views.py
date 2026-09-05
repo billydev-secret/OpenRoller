@@ -62,7 +62,7 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
         if state.message_id is not None and channel is not None:
             try:
                 await channel.get_partial_message(state.message_id).edit(
-                    embed=build_embed(state), view=closed_view
+                    embed=build_embed(state, getattr(channel, "guild", None)), view=closed_view
                 )
             except discord.Forbidden:
                 channel_forbidden = True
@@ -322,6 +322,9 @@ class RiskyRollView(BaseRiskyRollView):
 
             roll = random.randint(1, 100)
             state.add_roll(interaction.user.id, roll)
+            # Cache the roller's name so the roster embed can show it as text
+            # instead of a <@id> mention that some viewers can't resolve.
+            app_state.display_names[interaction.user.id] = interaction.user.display_name
             await app_state.store.save_round(state)
 
             log.info(
@@ -331,7 +334,7 @@ class RiskyRollView(BaseRiskyRollView):
                 roll,
             )
 
-            await interaction.response.edit_message(embed=build_embed(state), view=self)
+            await interaction.response.edit_message(embed=build_embed(state, interaction.guild), view=self)
 
             if state.auto_close_players and len(state.rolls) >= state.auto_close_players:
                 task = app_state.auto_close_tasks.pop(self.game_id, None)
@@ -405,7 +408,7 @@ class RiskyRollView(BaseRiskyRollView):
             closed_view.disable_all_items()
 
             try:
-                await interaction.response.edit_message(embed=build_embed(state), view=closed_view)
+                await interaction.response.edit_message(embed=build_embed(state, interaction.guild), view=closed_view)
             except discord.HTTPException:
                 log.exception("Failed to close round in #%s.", getattr(interaction.channel, "name", state.channel_id))
                 await interaction.response.send_message(
@@ -742,7 +745,7 @@ async def disable_round_message(
     view.disable_all_items()
 
     try:
-        await channel.get_partial_message(state.message_id).edit(embed=build_embed(state), view=view)
+        await channel.get_partial_message(state.message_id).edit(embed=build_embed(state, channel.guild), view=view)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         return
 

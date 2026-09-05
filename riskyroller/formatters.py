@@ -1,21 +1,58 @@
 import logging
+from collections.abc import Callable
 
 import discord
 
+from . import state as app_state
 from .models import PendingQuestionState, PostedQuestionState, PromptKind, RiskyRollState
 
 log = logging.getLogger(__name__)
+
+NameFn = Callable[[int], str]
+
+
+def mention(user_id: int) -> str:
+    return f"<@{user_id}>"
+
+
+def make_name_resolver(guild: "discord.Guild | None") -> NameFn:
+    """Return a resolver that prints a player's display name as plain text.
+
+    An embed mention is resolved by the *reading* client from its own member
+    cache, so ``<@id>`` renders as a bare number to anyone who hasn't seen that
+    user — mainly people who have since left. The live guild cache is tried
+    first (and memoised, so a player who leaves mid-round keeps the name we
+    saw), then the names captured when players rolled, then a mention as the
+    last resort. Names are markdown-escaped so a ``_`` or ``*`` in a nickname
+    can't restyle the roster.
+    """
+    def resolve(uid: int) -> str:
+        member = guild.get_member(uid) if guild is not None else None
+        if member is not None:
+            live = (member.display_name or "").strip()
+            if live:
+                app_state.display_names[uid] = live
+        name = app_state.display_names.get(uid)
+        if not name:
+            return mention(uid)
+        return discord.utils.escape_markdown(name)
+
+    return resolve
 
 
 def format_user_mentions(user_ids: set[int]) -> str:
     return " ".join(f"<@{user_id}>" for user_id in sorted(user_ids))
 
 
-def format_lowest_rolloff_note(tied_user_ids: set[int], selected_user_id: int | None) -> str:
+def format_lowest_rolloff_note(
+    tied_user_ids: set[int],
+    selected_user_id: int | None,
+    name_fn: NameFn = mention,
+) -> str:
     if selected_user_id is None or len(tied_user_ids) < 2:
         return ""
-    tied_mentions = ", ".join(f"<@{user_id}>" for user_id in sorted(tied_user_ids))
-    return f"{tied_mentions} → <@{selected_user_id}>"
+    tied = ", ".join(name_fn(user_id) for user_id in sorted(tied_user_ids))
+    return f"{tied} → {name_fn(selected_user_id)}"
 
 
 def _roll_prefix(user_id: int, roll: int, state: RiskyRollState) -> str:
@@ -81,7 +118,8 @@ def build_pending_question_summary(state: PendingQuestionState, question_text: s
     return f"<@{state.winner_id}> rolled 69 and asked:\n> {question_text}"
 
 
-def build_embed(state: RiskyRollState) -> discord.Embed:
+def build_embed(state: RiskyRollState, guild: "discord.Guild | None" = None) -> discord.Embed:
+    name = make_name_resolver(guild)
     if state.is_open:
         color = discord.Color(0xDC3545)
     elif state.highest_user is not None and state.lowest_user is None:
@@ -110,27 +148,27 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
 
     sorted_rolls = sorted(state.rolls.items(), key=lambda item: item[1], reverse=True)
     lines = [
-        f"{_roll_prefix(user_id, roll, state)} **{roll}** — <@{user_id}>"
+        f"{_roll_prefix(user_id, roll, state)} **{roll}** — {name(user_id)}"
         for user_id, roll in sorted_rolls
     ]
     embed.add_field(name=f"Rolls ({len(state.rolls)})", value="\n".join(lines), inline=False)
 
     if not state.is_open and state.highest_user:
-        high_mention = f"<@{state.highest_user}>"
-        highest_rolloff_note = format_lowest_rolloff_note(state.highest_tie_user_ids, state.highest_user)
+        high_mention = name(state.highest_user)
+        highest_rolloff_note = format_lowest_rolloff_note(state.highest_tie_user_ids, state.highest_user, name)
         if state.lowest_user is None:
             result = f"**Asks:** {high_mention}\n**Answers:** the room"
             if highest_rolloff_note:
                 result += f"\n{highest_rolloff_note}"
         else:
-            low_mention = f"<@{state.lowest_user}>"
+            low_mention = name(state.lowest_user)
             winner_rolled_100 = state.rolls.get(state.highest_user) == 100
             loser_rolled_1 = state.rolls.get(state.lowest_user) == 1
 
             if winner_rolled_100 and state.second_lowest_user is not None:
-                result = f"**Asks:** {high_mention} ⭐\n**Answers:** {low_mention} and <@{state.second_lowest_user}>"
+                result = f"**Asks:** {high_mention} ⭐\n**Answers:** {low_mention} and {name(state.second_lowest_user)}"
             elif loser_rolled_1 and state.second_highest_user is not None:
-                result = f"**Asks:** {high_mention} and <@{state.second_highest_user}>\n**Answers:** {low_mention} ☠️"
+                result = f"**Asks:** {high_mention} and {name(state.second_highest_user)}\n**Answers:** {low_mention} ☠️"
             else:
                 result = f"**Asks:** {high_mention}\n**Answers:** {low_mention}"
 
@@ -138,9 +176,9 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
             # roster shows who was in each draw and not just who came out.
             for note in (
                 highest_rolloff_note,
-                format_lowest_rolloff_note(state.lowest_tie_user_ids, state.lowest_user),
-                format_lowest_rolloff_note(state.second_lowest_tie_user_ids, state.second_lowest_user),
-                format_lowest_rolloff_note(state.second_highest_tie_user_ids, state.second_highest_user),
+                format_lowest_rolloff_note(state.lowest_tie_user_ids, state.lowest_user, name),
+                format_lowest_rolloff_note(state.second_lowest_tie_user_ids, state.second_lowest_user, name),
+                format_lowest_rolloff_note(state.second_highest_tie_user_ids, state.second_highest_user, name),
             ):
                 if note:
                     result += f"\n{note}"
