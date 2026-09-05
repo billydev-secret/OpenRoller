@@ -152,6 +152,70 @@ class RiskyRollStateTests(unittest.TestCase):
         self.assertEqual(RoundResult.OK, result.result_type)
         self.assertEqual(set(), state.lowest_tie_user_ids)  # Should be cleared
 
+    def test_resolve_clears_every_tie_set_at_start(self) -> None:
+        state = self.make_state(rolls={1: 90, 2: 50})
+        state.highest_tie_user_ids = {97}
+        state.second_lowest_tie_user_ids = {96}
+        state.second_highest_tie_user_ids = {95}
+
+        state.resolve()
+
+        self.assertEqual(set(), state.highest_tie_user_ids)
+        self.assertEqual(set(), state.second_lowest_tie_user_ids)
+        self.assertEqual(set(), state.second_highest_tie_user_ids)
+
+    def test_resolve_highest_tie_records_who_was_in_the_rolloff(self) -> None:
+        state = self.make_state(rolls={1: 88, 2: 88, 3: 10})
+
+        state.resolve()
+
+        self.assertEqual({1, 2}, state.highest_tie_user_ids)
+        self.assertIn(state.highest_user, {1, 2})
+
+    def test_resolve_sixtynine_tie_records_who_was_in_the_rolloff(self) -> None:
+        state = self.make_state(rolls={1: 69, 2: 69, 3: 20})
+
+        state.resolve()
+
+        self.assertEqual({1, 2}, state.highest_tie_user_ids)
+
+    def test_resolve_unique_highest_leaves_highest_tie_set_empty(self) -> None:
+        state = self.make_state(rolls={1: 93, 2: 18, 3: 50})
+
+        state.resolve()
+
+        self.assertEqual(set(), state.highest_tie_user_ids)
+
+    def test_100_rule_records_second_lowest_tie(self) -> None:
+        state = self.make_state(rolls={1: 100, 2: 5, 3: 20, 4: 20})
+
+        state.resolve()
+
+        self.assertEqual(1, state.highest_user)
+        self.assertEqual(2, state.lowest_user)
+        self.assertIn(state.second_lowest_user, {3, 4})
+        self.assertEqual({3, 4}, state.second_lowest_tie_user_ids)
+        self.assertEqual(set(), state.second_highest_tie_user_ids)
+
+    def test_1_rule_records_second_highest_tie(self) -> None:
+        state = self.make_state(rolls={1: 1, 2: 90, 3: 50, 4: 50})
+
+        state.resolve()
+
+        self.assertEqual(2, state.highest_user)
+        self.assertEqual(1, state.lowest_user)
+        self.assertIn(state.second_highest_user, {3, 4})
+        self.assertEqual({3, 4}, state.second_highest_tie_user_ids)
+        self.assertEqual(set(), state.second_lowest_tie_user_ids)
+
+    def test_second_extreme_without_a_tie_leaves_tie_set_empty(self) -> None:
+        state = self.make_state(rolls={1: 100, 2: 5, 3: 20, 4: 30})
+
+        state.resolve()
+
+        self.assertEqual(3, state.second_lowest_user)
+        self.assertEqual(set(), state.second_lowest_tie_user_ids)
+
 
 class GameStatePresentationTests(unittest.TestCase):
     def test_build_embed_for_open_round_no_rolls(self) -> None:
@@ -200,6 +264,59 @@ class GameStatePresentationTests(unittest.TestCase):
         self.assertIn("**Asks:** <@44>", embed.fields[1].value or "")
         self.assertIn("**Answers:** <@55>", embed.fields[1].value or "")
         self.assertIn("<@55>, <@66> → <@55>", embed.fields[1].value or "")
+
+    def test_build_embed_shows_highest_rolloff_note(self) -> None:
+        state = RiskyRollState(
+            channel_id=1,
+            guild_id=2,
+            opener_id=3,
+            rolls={44: 80, 55: 80, 66: 20},
+            is_open=False,
+            highest_user=44,
+            lowest_user=66,
+            highest_tie_user_ids={44, 55},
+        )
+
+        embed = build_embed(state)
+
+        self.assertIn("<@44>, <@55> → <@44>", embed.fields[1].value or "")
+
+    def test_build_embed_shows_second_extreme_rolloff_notes(self) -> None:
+        state = RiskyRollState(
+            channel_id=1,
+            guild_id=2,
+            opener_id=3,
+            rolls={1: 100, 2: 5, 3: 20, 4: 20},
+            is_open=False,
+            highest_user=1,
+            lowest_user=2,
+            second_lowest_user=3,
+            second_lowest_tie_user_ids={3, 4},
+        )
+
+        embed = build_embed(state)
+
+        value = embed.fields[1].value or ""
+        self.assertIn("**Answers:** <@2> and <@3>", value)
+        self.assertIn("<@3>, <@4> → <@3>", value)
+
+    def test_build_embed_for_closed_sixtynine_tie_shows_rolloff_note(self) -> None:
+        state = RiskyRollState(
+            channel_id=1,
+            guild_id=2,
+            opener_id=3,
+            rolls={99: 69, 98: 69, 100: 10},
+            is_open=False,
+            highest_user=99,
+            lowest_user=None,
+            highest_tie_user_ids={98, 99},
+        )
+
+        embed = build_embed(state)
+
+        value = embed.fields[1].value or ""
+        self.assertIn("**Answers:** the room", value)
+        self.assertIn("<@98>, <@99> → <@99>", value)
 
     def test_build_embed_for_closed_sixtynine_result(self) -> None:
         state = RiskyRollState(

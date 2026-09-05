@@ -117,8 +117,11 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
 
     if not state.is_open and state.highest_user:
         high_mention = f"<@{state.highest_user}>"
+        highest_rolloff_note = format_lowest_rolloff_note(state.highest_tie_user_ids, state.highest_user)
         if state.lowest_user is None:
             result = f"**Asks:** {high_mention}\n**Answers:** the room"
+            if highest_rolloff_note:
+                result += f"\n{highest_rolloff_note}"
         else:
             low_mention = f"<@{state.lowest_user}>"
             winner_rolled_100 = state.rolls.get(state.highest_user) == 100
@@ -131,12 +134,16 @@ def build_embed(state: RiskyRollState) -> discord.Embed:
             else:
                 result = f"**Asks:** {high_mention}\n**Answers:** {low_mention}"
 
-            lowest_rolloff_note = format_lowest_rolloff_note(
-                state.lowest_tie_user_ids,
-                state.lowest_user,
-            )
-            if lowest_rolloff_note:
-                result += f"\n{lowest_rolloff_note}"
+            # One "tied → selected" line per rolloff the round ran, so the
+            # roster shows who was in each draw and not just who came out.
+            for note in (
+                highest_rolloff_note,
+                format_lowest_rolloff_note(state.lowest_tie_user_ids, state.lowest_user),
+                format_lowest_rolloff_note(state.second_lowest_tie_user_ids, state.second_lowest_user),
+                format_lowest_rolloff_note(state.second_highest_tie_user_ids, state.second_highest_user),
+            ):
+                if note:
+                    result += f"\n{note}"
 
             if winner_rolled_100 and loser_rolled_1:
                 result += "\n*Both the 100 and 1 rules apply.*"

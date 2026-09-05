@@ -44,12 +44,15 @@ class RiskyRollState:
     highest_user: int | None = None
     lowest_user: int | None = None
     lowest_tie_user_ids: set[int] = field(default_factory=set)
+    highest_tie_user_ids: set[int] = field(default_factory=set)
     auto_close_players: int | None = None
     auto_close_minutes: int | None = None
     created_at: float = field(default_factory=time.time)
     skip_min_game_time: bool = False
     second_lowest_user: int | None = None
     second_highest_user: int | None = None
+    second_lowest_tie_user_ids: set[int] = field(default_factory=set)
+    second_highest_tie_user_ids: set[int] = field(default_factory=set)
 
     def add_roll(self, user_id: int, value: int) -> None:
         self.rolls[user_id] = value
@@ -57,30 +60,33 @@ class RiskyRollState:
     def can_roll(self, user_id: int) -> bool:
         return user_id not in self.rolls
 
-    def _find_second_extreme(self, *, pick_lowest: bool) -> int | None:
+    def _find_second_extreme(self, *, pick_lowest: bool) -> tuple[int | None, set[int]]:
         if self.highest_user is None or self.lowest_user is None:
-            return None
+            return None, set()
         candidates = [
             (uid, r) for uid, r in self.rolls.items()
             if uid != self.highest_user and uid != self.lowest_user
         ]
         if not candidates:
-            return None
+            return None, set()
         target_val = min(r for _, r in candidates) if pick_lowest else max(r for _, r in candidates)
         tied = [uid for uid, r in candidates if r == target_val]
         if len(tied) == 1:
-            return tied[0]
+            return tied[0], set()
         winner_id, _ = run_tie_rolloff(tied, pick_lowest=pick_lowest)
-        return winner_id
+        return winner_id, set(tied)
 
     def _apply_special_roll_rules(self) -> None:
         if self.highest_user is not None and self.rolls.get(self.highest_user) == 100:
-            self.second_lowest_user = self._find_second_extreme(pick_lowest=True)
+            self.second_lowest_user, self.second_lowest_tie_user_ids = self._find_second_extreme(pick_lowest=True)
         if self.lowest_user is not None and self.rolls.get(self.lowest_user) == 1:
-            self.second_highest_user = self._find_second_extreme(pick_lowest=False)
+            self.second_highest_user, self.second_highest_tie_user_ids = self._find_second_extreme(pick_lowest=False)
 
     def resolve(self) -> ResolutionResult:
         self.lowest_tie_user_ids.clear()
+        self.highest_tie_user_ids.clear()
+        self.second_lowest_tie_user_ids.clear()
+        self.second_highest_tie_user_ids.clear()
 
         if len(self.rolls) < 2:
             return ResolutionResult(result_type=RoundResult.NOT_ENOUGH)
@@ -94,6 +100,7 @@ class RiskyRollState:
                 winner_id, rolloff_rounds = run_tie_rolloff(sixtyniners)
                 self.highest_user = winner_id
                 self.lowest_user = None
+                self.highest_tie_user_ids = set(sixtyniners)
                 self.is_open = False
                 log.info("Game %s: 69 tie resolved via rolloff. Winner: %s", self.game_id, winner_id)
                 return ResolutionResult(
@@ -110,6 +117,7 @@ class RiskyRollState:
         highest_users = [user_id for user_id, roll in self.rolls.items() if roll == max_value]
         if len(highest_users) > 1:
             winner_id, rolloff_rounds = run_tie_rolloff(highest_users)
+            self.highest_tie_user_ids = set(highest_users)
 
             remaining_user_ids = [user_id for user_id in self.rolls if user_id != winner_id]
             lowest_rolloff_user_ids: list[int] = []
