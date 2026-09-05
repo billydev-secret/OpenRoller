@@ -18,8 +18,12 @@ class StateStore:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-32000")
+        conn.execute("PRAGMA mmap_size=268435456")
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
     def _initialize(self) -> None:
@@ -57,6 +61,8 @@ class StateStore:
                     conn.execute("ALTER TABLE pending_questions ADD COLUMN extra_questioner_id INTEGER")
                 if "questioners_asked" not in pq_columns:
                     conn.execute("ALTER TABLE pending_questions ADD COLUMN questioners_asked TEXT")
+                if "created_at" not in pq_columns:
+                    conn.execute("ALTER TABLE pending_questions ADD COLUMN created_at REAL")
 
             if "guild_settings" in existing_tables:
                 gs_columns = {row["name"] for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
@@ -111,7 +117,8 @@ class StateStore:
                     lowest_tie_user_ids TEXT,
                     prompt_kind TEXT NOT NULL DEFAULT 'room',
                     extra_questioner_id INTEGER,
-                    questioners_asked TEXT
+                    questioners_asked TEXT,
+                    created_at REAL
                 );
 
                 CREATE TABLE IF NOT EXISTS posted_questions (
@@ -267,9 +274,10 @@ class StateStore:
                     lowest_tie_user_ids,
                     prompt_kind,
                     extra_questioner_id,
-                    questioners_asked
+                    questioners_asked,
+                    created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(game_id) DO UPDATE SET
                     channel_id = excluded.channel_id,
                     guild_id = excluded.guild_id,
@@ -280,6 +288,11 @@ class StateStore:
                     prompt_kind = excluded.prompt_kind,
                     extra_questioner_id = excluded.extra_questioner_id,
                     questioners_asked = excluded.questioners_asked
+                    -- created_at is NOT refreshed: a two-questioner round
+                    -- re-saves this row when the first of the two asks, and
+                    -- restarting the clock there would let a half-finished
+                    -- prompt outlive the sweep for as long as someone kept
+                    -- feeding it.
                 """,
                 (
                     state.game_id,
@@ -292,6 +305,7 @@ class StateStore:
                     state.prompt_kind,
                     state.extra_questioner_id,
                     serialize_user_ids(state.questioners_asked),
+                    state.created_at,
                 ),
             )
 
@@ -383,7 +397,8 @@ class StateStore:
                     lowest_tie_user_ids,
                     prompt_kind,
                     extra_questioner_id,
-                    questioners_asked
+                    questioners_asked,
+                    created_at
                 FROM pending_questions
                 """
             ).fetchall()
@@ -404,6 +419,7 @@ class StateStore:
                     int(row["extra_questioner_id"]) if row["extra_questioner_id"] is not None else None
                 ),
                 questioners_asked=deserialize_user_ids(row["questioners_asked"]),
+                created_at=float(row["created_at"]) if row["created_at"] is not None else 0.0,
             )
             for row in rows
         ]
@@ -522,3 +538,23 @@ class StateStore:
 
     async def sweep_old_posted_questions(self, max_age_seconds: int) -> int:
         return await asyncio.to_thread(self._sweep_old_posted_questions, max_age_seconds)
+
+    def _sweep_old_pending_questions(self, max_age_seconds: int) -> int:
+        """Drop prompts whose winner never pressed Ask Question.
+
+        NULL ``created_at`` is swept, unlike the posted-question sweep just
+        above which skips it. The difference is deliberate: this column was
+        added later, so a NULL here means "written before the column existed"
+        — genuinely old — while over there the column has always been written
+        and a NULL would be corruption.
+        """
+        cutoff = time.time() - max_age_seconds
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM pending_questions WHERE created_at IS NULL OR created_at < ?",
+                (cutoff,),
+            )
+            return cursor.rowcount or 0
+
+    async def sweep_old_pending_questions(self, max_age_seconds: int) -> int:
+        return await asyncio.to_thread(self._sweep_old_pending_questions, max_age_seconds)

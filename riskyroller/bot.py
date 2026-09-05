@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 intents = discord.Intents.default()
 
-POSTED_QUESTION_TTL_SECONDS = 7 * 24 * 60 * 60
+QUESTION_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 class Bot(discord.Client):
@@ -27,9 +27,12 @@ class Bot(discord.Client):
         commands.setup(self)
 
         await app_state.store.initialize()
-        swept = await app_state.store.sweep_old_posted_questions(POSTED_QUESTION_TTL_SECONDS)
+        swept = await app_state.store.sweep_old_posted_questions(QUESTION_TTL_SECONDS)
         if swept:
-            log.info("Swept %d posted_questions older than %d days.", swept, POSTED_QUESTION_TTL_SECONDS // 86400)
+            log.info("Swept %d posted_questions older than %d days.", swept, QUESTION_TTL_SECONDS // 86400)
+        swept = await app_state.store.sweep_old_pending_questions(QUESTION_TTL_SECONDS)
+        if swept:
+            log.info("Swept %d pending_questions older than %d days.", swept, QUESTION_TTL_SECONDS // 86400)
         ping_roles, min_game_times, active_rounds, pending_questions, posted_questions = await asyncio.gather(
             app_state.store.load_ping_roles(),
             app_state.store.load_min_game_times(),

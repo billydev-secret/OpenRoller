@@ -172,6 +172,7 @@ class PendingQuestionState:
     prompt_kind: PromptKind = PromptKind.ROOM
     extra_questioner_id: int | None = None
     questioners_asked: set[int] = field(default_factory=set)
+    created_at: float = field(default_factory=time.time)
 
     @property
     def questions_remaining(self) -> int:

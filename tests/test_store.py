@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -346,7 +347,86 @@ class StoreTests(unittest.TestCase):
 
         self.assertEqual({1: 10, 2: 20}, loaded)
 
+    # --- sweeps ---
+
+    def _pending(self, game_id: str, created_at: float) -> PendingQuestionState:
+        return PendingQuestionState(
+            channel_id=100,
+            guild_id=200,
+            winner_id=300,
+            participant_user_ids={400},
+            game_id=game_id,
+            prompt_kind="direct",
+            created_at=created_at,
+        )
+
+    def test_sweep_old_pending_questions_removes_stale_and_keeps_fresh(self) -> None:
+        week = 7 * 86400
+        run(self.store.save_pending_question(self._pending("old", time.time() - week - 60)))
+        run(self.store.save_pending_question(self._pending("new", time.time())))
+
+        swept = run(self.store.sweep_old_pending_questions(week))
+
+        self.assertEqual(1, swept)
+        loaded = run(self.store.load_pending_questions())
+        self.assertEqual(["new"], [s.game_id for s in loaded])
+
+    def test_sweep_old_pending_questions_treats_null_created_at_as_stale(self) -> None:
+        # A row written before the column existed has no timestamp; it is old
+        # by definition and must not survive the sweep forever.
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO pending_questions "
+                "(game_id, channel_id, guild_id, winner_id, participant_user_ids, created_at) "
+                "VALUES ('legacy', 1, 2, 3, '4', NULL)"
+            )
+
+        swept = run(self.store.sweep_old_pending_questions(7 * 86400))
+
+        self.assertEqual(1, swept)
+        self.assertEqual([], run(self.store.load_pending_questions()))
+
+    def test_pending_question_created_at_survives_resave(self) -> None:
+        # The two-questioner prompt re-saves after the first question; the
+        # clock must not restart or the prompt could outlive the sweep.
+        original = time.time() - 3 * 86400
+        state = self._pending("g", original)
+        run(self.store.save_pending_question(state))
+
+        state.created_at = time.time()
+        state.prompt_message_id = 555
+        run(self.store.save_pending_question(state))
+
+        loaded = run(self.store.load_pending_questions())
+        self.assertEqual(555, loaded[0].prompt_message_id)
+        self.assertAlmostEqual(original, loaded[0].created_at, places=2)
+
+    def test_sweep_old_posted_questions_removes_stale_and_keeps_fresh(self) -> None:
+        week = 7 * 86400
+        for message_id, created in ((1, time.time() - week - 60), (2, time.time())):
+            run(self.store.save_posted_question(PostedQuestionState(
+                message_id=message_id,
+                channel_id=100,
+                guild_id=200,
+                asker_id=300,
+                allowed_replier_ids={400},
+                question_text="q",
+                created_at=created,
+            )))
+
+        swept = run(self.store.sweep_old_posted_questions(week))
+
+        self.assertEqual(1, swept)
+        self.assertEqual([2], [s.message_id for s in run(self.store.load_posted_questions())])
+
     # --- schema migration ---
+
+    def test_database_runs_in_wal_mode(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+
+        self.assertEqual("wal", mode)
+
 
     def test_initialize_is_idempotent(self) -> None:
         run(self.store.initialize())  # Second call should not raise or duplicate
