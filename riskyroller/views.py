@@ -123,10 +123,38 @@ def _post_failure_text(
     )
 
 
+# How soon to try again when the channel can't be reached at auto-close time
+# (the client's cache is unconditionally empty right after a restart, since
+# setup_hook restores every timer before the gateway connects). Short enough
+# that a transient failure clears well within a round's normal lifetime.
+AUTO_CLOSE_RETRY_SECONDS = 30
+
+
+def _log_task_exception(task: asyncio.Task) -> None:
+    """Done-callback for a background auto-close task.
+
+    A task that ends in an exception rather than a normal return otherwise
+    only ever shows up as asyncio's "Task exception was never retrieved" —
+    calling task.exception() here retrieves it, so it lands in the log
+    instead of being silently dropped.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.error("Auto-close task failed.", exc_info=exc)
+
+
 async def schedule_auto_close(client: discord.Client, game_id: str, delay: float) -> None:
     if delay > 0:
         await asyncio.sleep(delay)
     await auto_close_round(client, game_id)
+
+
+def _rearm_auto_close(client: discord.Client, game_id: str, delay: float) -> None:
+    task = asyncio.create_task(schedule_auto_close(client, game_id, delay))
+    task.add_done_callback(_log_task_exception)
+    app_state.auto_close_tasks[game_id] = task
 
 
 async def auto_close_round(client: discord.Client, game_id: str) -> None:
@@ -137,28 +165,44 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
         if not state or not state.is_open:
             return
 
-        channel_id = state.channel_id
+        # Check the channel before anything destructive. get_text_channel
+        # already returns None for a routine fetch failure (a 502, a rate
+        # limit that outlives its retries — common right after a restart,
+        # when the client's channel cache is still empty). Doing this before
+        # state.resolve() means a channel we can't reach yet leaves the round
+        # untouched for the retry below, instead of resolving — which flips
+        # is_open — and then deleting a round nobody ever saw the result of.
+        channel = await get_text_channel(client, state.channel_id)
+        if channel is None:
+            log.error(
+                "Auto-close: could not reach channel %s for game %s; retrying in %ds.",
+                state.channel_id, game_id, AUTO_CLOSE_RETRY_SECONDS,
+            )
+            _rearm_auto_close(client, game_id, AUTO_CLOSE_RETRY_SECONDS)
+            return
+
         resolution = state.resolve()
-        channel = await get_text_channel(client, channel_id)
 
         if resolution.result_type == RoundResult.NOT_ENOUGH:
             state.is_open = False
             app_state.active_games.pop(game_id, None)
             await app_state.store.delete_round(game_id)
-            if channel is not None:
+            try:
                 await disable_round_message(state, channel)
                 rolled = len(state.rolls)
                 await channel.send(
                     "Round auto-closed with no result: at least 2 players must roll before a round can "
                     f"resolve, and {rolled} {'has' if rolled == 1 else 'have'}. Start another with /risky_start."
                 )
+            except Exception:
+                log.exception("Auto-close: failed to post the no-result notice for game %s.", game_id)
             return
 
         closed_view = RiskyRollView(game_id)
         closed_view.disable_all_items()
 
         channel_forbidden = False
-        if state.message_id is not None and channel is not None:
+        if state.message_id is not None:
             try:
                 await channel.get_partial_message(state.message_id).edit(
                     embed=build_embed(state, getattr(channel, "guild", None)), view=closed_view
@@ -168,22 +212,28 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
                 log.error(
                     "Auto-close: bot is missing access to #%s (game %s). "
                     "Check channel permissions and that the bot can access NSFW channels.",
-                    getattr(channel, "name", channel_id), game_id,
+                    getattr(channel, "name", game_id), game_id,
                 )
-            except (discord.NotFound, discord.HTTPException):
-                log.exception("Auto-close: failed to edit round message in #%s.", getattr(channel, "name", channel_id))
+            except Exception:
+                # Anything else — including transport failures like a
+                # dropped connection or a timeout, neither of which is a
+                # discord.HTTPException — is caught here rather than left to
+                # escape. state.resolve() above already flipped is_open, so
+                # letting this propagate would strand the round: closed in
+                # memory, but never popped or deleted below, and unreachable
+                # by any future close.
+                log.exception(
+                    "Auto-close: failed to edit round message in #%s (game %s).",
+                    getattr(channel, "name", game_id), game_id,
+                )
 
         app_state.active_games.pop(game_id, None)
         await app_state.store.delete_round(game_id)
 
-        if channel is None:
-            log.error("Auto-close: could not access channel %s; round closed with no prompt sent.", channel_id)
-            return
-
         if channel_forbidden:
             log.error(
                 "Auto-close: skipping winner prompt for game %s — bot has no access to #%s.",
-                game_id, getattr(channel, "name", channel_id),
+                game_id, getattr(channel, "name", game_id),
             )
             return
 
@@ -383,6 +433,12 @@ class BaseRiskyRollView(discord.ui.View):
     def __init__(self, game_id: str = ""):
         super().__init__(timeout=None)
         self.game_id = game_id
+        # Set once a callback has committed to an outcome that can't be
+        # cleanly walked back (a round resolved with a winner, say). An
+        # expired-interaction error after that point is not the routine
+        # "someone pressed a stale button" noise the 10062 branch below
+        # otherwise swallows.
+        self._resolved = False
 
     def disable_all_items(self) -> None:
         for item in self.children:
@@ -394,9 +450,16 @@ class BaseRiskyRollView(discord.ui.View):
         # 10062: Unknown interaction). Nothing can be sent on it any more, and
         # it is not a fault in the game — log quietly and move on.
         if isinstance(error, discord.NotFound) and error.code == 10062:
-            log.debug(
-                "Interaction expired in %s (game %s)", type(self).__name__, self.game_id or "?",
-            )
+            if self._resolved:
+                log.error(
+                    "Interaction expired in %s (game %s) after the round had already resolved — "
+                    "its message and stored state may now disagree.",
+                    type(self).__name__, self.game_id or "?",
+                )
+            else:
+                log.debug(
+                    "Interaction expired in %s (game %s)", type(self).__name__, self.game_id or "?",
+                )
             return
         if self.game_id:
             log.exception("Unhandled error in %s (game %s)", type(self).__name__, self.game_id, exc_info=error)
@@ -492,9 +555,9 @@ class RiskyRollView(BaseRiskyRollView):
                     app_state.min_game_seconds, state.guild_id, state.skip_min_game_time, DEFAULT_MIN_GAME_SECONDS
                 )
                 delay = max(0.0, min_seconds - elapsed)
-                app_state.auto_close_tasks[self.game_id] = asyncio.create_task(
-                    schedule_auto_close(interaction.client, self.game_id, delay)
-                )
+                task = asyncio.create_task(schedule_auto_close(interaction.client, self.game_id, delay))
+                task.add_done_callback(_log_task_exception)
+                app_state.auto_close_tasks[self.game_id] = task
 
     @discord.ui.button(
         label="How to Play",
@@ -515,6 +578,11 @@ class RiskyRollView(BaseRiskyRollView):
         emoji="🔒",
     )
     async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Acknowledge at once, for the same reason Roll does: a burst of
+        # rolls can hold the game lock (and the database) past the
+        # interaction token's normal 3-second life, and a deferred response
+        # keeps a much longer window to edit or refuse in.
+        await interaction.response.defer()
         async with app_state.get_game_lock(self.game_id):
             state = app_state.active_games.get(self.game_id)
             if not state or not state.is_open:
@@ -575,27 +643,35 @@ class RiskyRollView(BaseRiskyRollView):
                 )
                 return
 
+            # From here the round has a real winner. Losing the message
+            # update — or the interaction token itself — no longer means
+            # losing the round: the result stands, and the question prompt
+            # still has to go out either way.
+            self._resolved = True
+
             task = app_state.auto_close_tasks.pop(self.game_id, None)
             if task:
                 task.cancel()
 
-            app_state.active_games.pop(self.game_id, None)
-            await app_state.store.delete_round(self.game_id)
-
             closed_view = RiskyRollView(self.game_id)
             closed_view.disable_all_items()
 
+            edit_failed = False
             try:
-                await interaction.response.edit_message(embed=build_embed(state, interaction.guild), view=closed_view)
+                await interaction.edit_original_response(embed=build_embed(state, interaction.guild), view=closed_view)
             except discord.HTTPException:
-                log.exception("Failed to close round in #%s.", getattr(interaction.channel, "name", state.channel_id))
-                await _ephemeral(
-                    interaction,
-                    "The round is closed, but I couldn't update its message or post the question prompt, so it "
-                    f"ends without a question. Start a new round with /risky_start. "
-                    f"{failure_reason(interaction.app_permissions)}",
+                edit_failed = True
+                log.error(
+                    "Close: failed to update the round message in #%s (game %s) after it had already "
+                    "resolved; leaving it out of the round store for now and still sending its question "
+                    "prompt. %s",
+                    getattr(interaction.channel, "name", state.channel_id), self.game_id,
+                    failure_reason(interaction.app_permissions),
                 )
-                return
+
+            if not edit_failed:
+                app_state.active_games.pop(self.game_id, None)
+                await app_state.store.delete_round(self.game_id)
 
             try:
                 await _send_question_prompts_followup(interaction, self.game_id, state, resolution)
