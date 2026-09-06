@@ -1,4 +1,5 @@
 import io
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -144,12 +145,16 @@ class DotenvLookupTests(unittest.TestCase):
     file-relative search walks up to), not a copy of its lookup line."""
 
     def setUp(self) -> None:
-        self._repo_env = _REPO_ROOT / ".env"
-        self.assertFalse(
-            self._repo_env.exists(),
-            "a real .env is already sitting in the checkout; refusing to overwrite it",
-        )
-        self.addCleanup(lambda: self._repo_env.unlink(missing_ok=True))
+        # The package is copied into a throwaway install root rather than
+        # tested in place: the file-relative search walks up from config.py's
+        # own directory, so exercising it needs a .env one level above the
+        # package -- and writing one into the checkout would sit next to (and
+        # on cleanup delete) the operator's real .env.
+        install_root = tempfile.TemporaryDirectory()
+        self.addCleanup(install_root.cleanup)
+        self._install_root = Path(install_root.name)
+        shutil.copytree(_REPO_ROOT / "riskyroller", self._install_root / "riskyroller")
+        self._repo_env = self._install_root / ".env"
 
     def _run_probe(self, cwd: str) -> str:
         # A real script file, not `python -c`: dotenv's own find_dotenv()
@@ -166,7 +171,7 @@ class DotenvLookupTests(unittest.TestCase):
             cwd=cwd,
             capture_output=True,
             text=True,
-            env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(_REPO_ROOT)},  # no ambient DOTENV_LOOKUP_PROBE
+            env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(self._install_root)},  # no ambient DOTENV_LOOKUP_PROBE
             check=True,
         )
         return result.stdout.strip()

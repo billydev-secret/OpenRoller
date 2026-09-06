@@ -456,8 +456,8 @@ class GameStatePresentationTests(unittest.TestCase):
 
 class RosterNameTests(unittest.TestCase):
     def setUp(self) -> None:
-        app_state.display_names.clear()
-        self.addCleanup(app_state.display_names.clear)
+        app_state.guild_display_names.clear()
+        self.addCleanup(app_state.guild_display_names.clear)
 
     def closed_state(self) -> RiskyRollState:
         return RiskyRollState(
@@ -471,7 +471,7 @@ class RosterNameTests(unittest.TestCase):
         )
 
     def test_roster_and_result_use_cached_display_names(self) -> None:
-        app_state.display_names.update({44: "Alice", 55: "Bob"})
+        app_state.guild_display_names.update({(2, 44): "Alice", (2, 55): "Bob"})
 
         embed = build_embed(self.closed_state())
 
@@ -481,7 +481,7 @@ class RosterNameTests(unittest.TestCase):
         self.assertIn("**Answers:** Bob", embed.fields[1].value or "")
 
     def test_unknown_player_falls_back_to_a_mention(self) -> None:
-        app_state.display_names[44] = "Alice"
+        app_state.guild_display_names[(2, 44)] = "Alice"
 
         embed = build_embed(self.closed_state())
 
@@ -489,7 +489,7 @@ class RosterNameTests(unittest.TestCase):
         self.assertIn("**Answers:** <@55>", embed.fields[1].value or "")
 
     def test_live_guild_member_wins_and_is_memoised(self) -> None:
-        app_state.display_names[44] = "Old Name"
+        app_state.guild_display_names[(2, 44)] = "Old Name"
         member = Mock()
         member.display_name = "Live Alice"
         guild = Mock()
@@ -499,17 +499,17 @@ class RosterNameTests(unittest.TestCase):
 
         self.assertIn("**Asks:** Live Alice", embed.fields[1].value or "")
         self.assertIn("**Answers:** <@55>", embed.fields[1].value or "")
-        self.assertEqual("Live Alice", app_state.display_names[44])
+        self.assertEqual("Live Alice", app_state.guild_display_names[(2, 44)])
 
     def test_display_name_markdown_is_escaped(self) -> None:
-        app_state.display_names[44] = "_al*ice_"
+        app_state.guild_display_names[(2, 44)] = "_al*ice_"
 
         embed = build_embed(self.closed_state())
 
         self.assertIn("\\_al\\*ice\\_", embed.fields[1].value or "")
 
     def test_rolloff_note_uses_the_name_resolver(self) -> None:
-        app_state.display_names.update({44: "Alice", 55: "Bob"})
+        app_state.guild_display_names.update({(2, 44): "Alice", (2, 55): "Bob"})
         state = self.closed_state()
         state.rolls = {44: 80, 55: 80, 66: 20}
         state.lowest_user = 66

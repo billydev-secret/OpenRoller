@@ -207,6 +207,13 @@ class Bot(discord.Client):
         self._startup_guild_sweep_done = True
 
         current_guild_ids = {g.id for g in self.guilds}
+        if not current_guild_ids:
+            # Every guild would look departed. That is true of a fresh
+            # install (where there is nothing to sweep anyway) and of a ready
+            # that arrived without its guild list, where sweeping would
+            # delete every server's data irrecoverably. Not worth the risk
+            # for a cleanup this routine.
+            return
         known_guild_ids = (
             set(app_state.ping_roles)
             | set(app_state.min_game_seconds)

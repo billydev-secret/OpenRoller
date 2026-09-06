@@ -25,10 +25,10 @@ def make_name_resolver(guild: "discord.Guild | None", guild_id: int) -> NameFn:
     first, but under this bot's default intents that cache holds voice state
     only, so it practically never has an answer — the name that actually
     renders almost always comes from ``guild_display_names``, captured per
-    guild when each player rolled, scoped to `guild_id` so a name captured in
-    one server can never be handed back for another. The flat
-    ``display_names`` dict is a last-resort fallback for the rare case the
-    live cache *did* have an answer, and a mention is the final fallback.
+    guild when each player rolled. Every name is keyed by ``(guild_id, uid)``,
+    including the ones memoised from a live cache hit: a nickname holds only
+    in the server it was read from, so a flat user-id key would hand one
+    server's name to another's roster. A mention is the final fallback.
     Names are markdown-escaped so a ``_`` or ``*`` in a nickname can't
     restyle the roster.
     """
@@ -37,8 +37,8 @@ def make_name_resolver(guild: "discord.Guild | None", guild_id: int) -> NameFn:
         if member is not None:
             live = (member.display_name or "").strip()
             if live:
-                app_state.display_names[uid] = live
-        name = app_state.guild_display_names.get((guild_id, uid)) or app_state.display_names.get(uid)
+                app_state.guild_display_names[(guild_id, uid)] = live
+        name = app_state.guild_display_names.get((guild_id, uid))
         if not name:
             return mention(uid)
         return discord.utils.escape_markdown(name)

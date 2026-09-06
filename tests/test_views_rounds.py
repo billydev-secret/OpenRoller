@@ -107,7 +107,7 @@ class CloseButtonTests(_RoundTestCase):
         self.assertTrue(interaction.followup.send.await_args.kwargs.get("wait"))
         self.assertIn("g1", app_state.pending_questions)
 
-    async def test_expired_interaction_on_the_closing_edit_keeps_the_round_and_still_prompts(self) -> None:
+    async def test_expired_interaction_on_the_closing_edit_still_prompts(self) -> None:
         state = _make_state("g2", rolls={10: 80, 20: 30}, opener_id=10)
         app_state.active_games["g2"] = state
         interaction = _make_interaction(10)
@@ -116,14 +116,17 @@ class CloseButtonTests(_RoundTestCase):
         view = RiskyRollView("g2")
         await view.close_button.callback(interaction)
 
-        # The display update failed, but the round must not be thrown away:
-        # it stays bookkept and on disk...
-        self.assertIn("g2", app_state.active_games)
-        self.fake_store.delete_round.assert_not_awaited()
-        # ...and the winner still gets their question prompt regardless.
+        # The display update failed. What must not happen is what used to:
+        # the round destroyed and the winner left with no prompt at all.
         interaction.followup.send.assert_awaited_once()
         self.assertTrue(interaction.followup.send.await_args.kwargs.get("wait"))
         self.assertIn("g2", app_state.pending_questions)
+        # The round really did resolve, so it is retired either way — keeping
+        # it would hold a slot against the channel's cap forever, and its
+        # stored row still says is_open, so a restart would reopen a round
+        # whose question has already been asked.
+        self.assertNotIn("g2", app_state.active_games)
+        self.fake_store.delete_round.assert_awaited_once_with("g2")
 
     async def test_not_enough_players_refuses_without_touching_the_round(self) -> None:
         state = _make_state("g3", rolls={10: 42}, opener_id=10)

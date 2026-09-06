@@ -63,8 +63,8 @@ class RollsFieldCapTests(unittest.TestCase):
     1024-character embed field limit (build_embed had no cap at all)."""
 
     def setUp(self) -> None:
-        app_state.display_names.clear()
-        self.addCleanup(app_state.display_names.clear)
+        app_state.guild_display_names.clear()
+        self.addCleanup(app_state.guild_display_names.clear)
 
     def test_a_full_room_of_long_names_is_split_under_the_limit(self) -> None:
         rolls = {}
@@ -75,7 +75,7 @@ class RollsFieldCapTests(unittest.TestCase):
             # escape_markdown doubles every "_", so this renders at 64
             # characters, the regression c64684b introduced by switching the
             # roster from a ~22-character <@id> mention to the escaped name.
-            app_state.display_names[uid] = "_" * 32
+            app_state.guild_display_names[(2, uid)] = "_" * 32
         state = RiskyRollState(channel_id=1, guild_id=2, opener_id=1, rolls=rolls)
 
         embed = build_embed(state)

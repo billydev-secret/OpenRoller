@@ -15,15 +15,6 @@ min_game_seconds: dict[int, int] = {}
 max_games_per_channel: dict[int, int] = {}
 auto_close_tasks: dict[str, asyncio.Task] = {}
 
-# user_id -> display name. Only written when discord.py's own member cache
-# already has the user, which under this bot's default intents is rare (the
-# cache holds voice state only) — see guild_display_names below for the
-# cache that carries almost every roster in practice. Kept process-wide
-# rather than per guild since a hit here came from a live cache lookup for
-# whichever guild asked, so it's already correct for that guild; formatters
-# only reaches this dict once guild_display_names has nothing to offer.
-display_names: dict[int, str] = {}
-
 # (guild_id, user_id) -> display name, captured when a player rolls so the
 # roster embed can print names instead of raw <@id> mentions (embeds don't
 # resolve mentions for members the viewer's client hasn't cached — mainly

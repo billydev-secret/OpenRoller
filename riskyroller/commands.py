@@ -257,18 +257,26 @@ async def _reset_channel_state(interaction: discord.Interaction) -> None:
             )
             return
 
+        # Each game is torn down under its own game lock — the same lock the
+        # roll and close buttons and auto_close_round hold for their whole
+        # critical section. Without it a roll already in flight can finish
+        # afterwards and re-edit the round message with its buttons enabled,
+        # or a running auto-close can post a winner prompt, for a round this
+        # reset has just deleted. (bot.py's guild teardown does the same.)
         for game_id in game_ids:
-            task = app_state.auto_close_tasks.pop(game_id, None)
-            if task:
-                task.cancel()
-            state = app_state.active_games.pop(game_id, None)
-            if state is not None:
-                state.is_open = False
-                await disable_round_message(state, interaction.channel)
-            await app_state.store.delete_round(game_id)
+            async with app_state.get_game_lock(game_id):
+                task = app_state.auto_close_tasks.pop(game_id, None)
+                if task:
+                    task.cancel()
+                state = app_state.active_games.pop(game_id, None)
+                if state is not None:
+                    state.is_open = False
+                    await disable_round_message(state, interaction.channel)
+                await app_state.store.delete_round(game_id)
 
         for game_id in question_ids:
-            pending_state = app_state.pending_questions.pop(game_id, None)
+            async with app_state.get_game_lock(game_id):
+                pending_state = app_state.pending_questions.pop(game_id, None)
             if pending_state is not None:
                 await disable_pending_question_message(
                     interaction.client,

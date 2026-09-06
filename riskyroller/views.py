@@ -227,7 +227,7 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
                 log.error(
                     "Auto-close: bot is missing access to #%s (game %s). "
                     "Check channel permissions and that the bot can access NSFW channels.",
-                    getattr(channel, "name", game_id), game_id,
+                    getattr(channel, "name", state.channel_id), game_id,
                 )
             except Exception:
                 # Anything else — including transport failures like a
@@ -239,7 +239,7 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
                 # by any future close.
                 log.exception(
                     "Auto-close: failed to edit round message in #%s (game %s).",
-                    getattr(channel, "name", game_id), game_id,
+                    getattr(channel, "name", state.channel_id), game_id,
                 )
 
         app_state.active_games.pop(game_id, None)
@@ -248,7 +248,7 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
         if channel_forbidden:
             log.error(
                 "Auto-close: skipping winner prompt for game %s — bot has no access to #%s.",
-                game_id, getattr(channel, "name", game_id),
+                game_id, getattr(channel, "name", state.channel_id),
             )
             return
 
@@ -678,22 +678,15 @@ class RiskyRollView(BaseRiskyRollView):
             closed_view = RiskyRollView(self.game_id)
             closed_view.disable_all_items()
 
-            edit_failed = False
             try:
                 await interaction.edit_original_response(embed=build_embed(state, interaction.guild), view=closed_view)
             except discord.HTTPException:
-                edit_failed = True
                 log.error(
                     "Close: failed to update the round message in #%s (game %s) after it had already "
-                    "resolved; leaving it out of the round store for now and still sending its question "
-                    "prompt. %s",
+                    "resolved; its buttons may still look live, but the question prompt still goes out. %s",
                     getattr(interaction.channel, "name", state.channel_id), self.game_id,
                     failure_reason(interaction.app_permissions),
                 )
-
-            if not edit_failed:
-                app_state.active_games.pop(self.game_id, None)
-                await app_state.store.delete_round(self.game_id)
 
             try:
                 await _send_question_prompts_followup(interaction, self.game_id, state, resolution)
@@ -708,6 +701,20 @@ class RiskyRollView(BaseRiskyRollView):
                     )
                 except discord.HTTPException:
                     log.exception("Close: also failed to post the no-prompt notice for game %s.", self.game_id)
+            finally:
+                # The round is retired here, after the announcement, not
+                # before it: destroying it first is what used to lose a round
+                # outright whenever the closing edit failed. It is retired
+                # even when that edit failed, because the round really has
+                # resolved — leaving it behind would hold a slot against the
+                # channel's round cap forever, and its stored row still says
+                # is_open, so a restart would reopen a round whose question
+                # has already been asked.
+                app_state.active_games.pop(self.game_id, None)
+                try:
+                    await app_state.store.delete_round(self.game_id)
+                except Exception:
+                    log.exception("Close: failed to delete the closed round %s from the store.", self.game_id)
 
 
 class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):

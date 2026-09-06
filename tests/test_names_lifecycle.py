@@ -37,7 +37,6 @@ class CrossGuildDisplayNameTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         for d in (
             app_state.active_games,
-            app_state.display_names,
             app_state.guild_display_names,
             app_state.auto_close_tasks,
         ):
