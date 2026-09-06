@@ -63,9 +63,19 @@ class RiskyRollState:
     def _find_second_extreme(self, *, pick_lowest: bool) -> tuple[int | None, set[int]]:
         if self.highest_user is None or self.lowest_user is None:
             return None, set()
+        # Excluding the two extreme players by id alone leaves this purely
+        # rank-based: with rolls of 100, 100 and 40, whoever lost the rolloff
+        # for the win is simply "the remaining player" and gets asked as one
+        # of the bottom 2 — with the skull — despite having rolled a 100. The
+        # same in reverse hands a question to someone who rolled a 1 as one of
+        # the top 2. A player who tied at the far end isn't a member of this
+        # end's pair, however the rolloff ranked them, so their value is out
+        # too. If that leaves nobody, the rule simply doesn't add a second
+        # player, which is already how a round with too few players behaves.
+        far_end_value = self.rolls.get(self.highest_user) if pick_lowest else self.rolls.get(self.lowest_user)
         candidates = [
             (uid, r) for uid, r in self.rolls.items()
-            if uid != self.highest_user and uid != self.lowest_user
+            if uid != self.highest_user and uid != self.lowest_user and r != far_end_value
         ]
         if not candidates:
             return None, set()

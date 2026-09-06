@@ -34,8 +34,8 @@
 Once a round closes, the bot posts a prompt with an **Ask Question** button; who it's for depends on what was rolled:
 - **Standard outcome**: the winner asks the loser one question.
 - 🔥 **Someone rolled `69`**: this beats every other roll, including a `100` — that player wins however high anyone else rolled, and the round has no loser at all, so the `1` rule can't apply alongside it. They ask the whole room instead of the loser, and their question opens its own thread rather than posting in the loser's place.
-- ⭐ **The winner rolled `100`**: their question goes to the loser *and* a second player — whoever rolled lowest among everyone except the winner and loser (a rolloff settles a tie for that spot too). Only kicks in when a distinct third player exists to ask.
-- ☠️ **The loser rolled `1`**: the loser gets asked by *two* questioners instead of one — the winner, and a second questioner: whoever rolled highest among everyone except the winner and loser (again settled by rolloff if tied). The winner and the second questioner each get their own question. Only kicks in when a distinct third player exists to ask.
+- ⭐ **The winner rolled `100`**: their question goes to the loser *and* a second player — whoever rolled lowest among everyone except the winner and loser (a rolloff settles a tie for that spot too). Anyone who matched the winner's own roll is skipped: losing a rolloff for the win doesn't make you one of the bottom 2. Only kicks in when a distinct third player is left.
+- ☠️ **The loser rolled `1`**: the loser gets asked by *two* questioners instead of one — the winner, and a second questioner: whoever rolled highest among everyone except the winner and loser (again settled by rolloff if tied). Anyone who matched the loser's own roll is skipped, so rolling a `1` never earns you a question. The winner and the second questioner each get their own question. Only kicks in when a distinct third player is left.
 - The `100` and `1` rules can both apply in the same round, if the winner rolled `100` and the loser rolled `1`.
 - Only whoever the prompt names may press **Ask Question**; anyone else pressing it is turned away.
 

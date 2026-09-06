@@ -699,5 +699,46 @@ class HowToPlayContentTests(unittest.TestCase):
         self.assertIn("Beats every other roll", content)
 
 
+class SecondExtremeIsValueBasedTests(unittest.TestCase):
+    """The extra asker/answerer is chosen by what someone rolled, not by where
+    they landed once the two extremes are removed. A rolloff loser who rolled
+    the winning value is not a member of the bottom 2, and someone who rolled
+    the losing value is not a member of the top 2."""
+
+    def _resolved(self, rolls: dict[int, int], *, winner: int) -> RiskyRollState:
+        state = RiskyRollState(channel_id=1, guild_id=2, opener_id=1, rolls=rolls)
+        # Pin the rolloff so the assertions below are about the selection rule
+        # rather than about which tied player chance happened to pick.
+        with patch("riskyroller.models.run_tie_rolloff", return_value=(winner, [])):
+            state.resolve()
+        return state
+
+    def test_a_rolloff_loser_who_rolled_100_is_not_an_extra_answerer(self) -> None:
+        # 100 / 100 / 40: player 20 lost the rolloff for the win, so they are
+        # not the winner — but they rolled a 100 and must not be asked as one
+        # of the bottom 2 with a skull beside their name.
+        state = self._resolved({10: 100, 20: 100, 30: 40}, winner=10)
+
+        self.assertEqual(10, state.highest_user)
+        self.assertEqual(30, state.lowest_user)
+        self.assertIsNone(state.second_lowest_user)
+
+    def test_a_rolloff_loser_who_rolled_1_is_not_an_extra_asker(self) -> None:
+        # 90 / 1 / 1: player 20 survived the rolloff for the loss, but they
+        # still rolled a 1 and are not one of the top 2.
+        state = self._resolved({10: 90, 20: 1, 30: 1}, winner=30)
+
+        self.assertEqual(10, state.highest_user)
+        self.assertEqual(30, state.lowest_user)
+        self.assertIsNone(state.second_highest_user)
+
+    def test_a_genuine_third_player_is_still_chosen(self) -> None:
+        # Nobody tied at either end, so the rule applies exactly as before.
+        state = RiskyRollState(channel_id=1, guild_id=2, opener_id=1, rolls={10: 100, 20: 50, 30: 40})
+        state.resolve()
+
+        self.assertEqual(20, state.second_lowest_user)
+
+
 if __name__ == "__main__":
     unittest.main()
