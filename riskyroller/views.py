@@ -22,6 +22,7 @@ from .formatters import (
     build_pending_prompt_content,
     build_pending_question_summary,
     build_question_reply_content,
+    collect_prompt_mention_ids,
     failure_reason,
     format_duration,
     format_room_mentions,
@@ -71,6 +72,20 @@ async def _ephemeral(interaction: discord.Interaction, text: str) -> None:
         await interaction.followup.send(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
     else:
         await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+
+def _allowed_users(user_ids) -> discord.AllowedMentions:
+    """An allow-list for exactly `user_ids` — never @everyone, @here, or a role.
+
+    Every field discord.AllowedMentions leaves unset defaults to a truthy
+    sentinel (discord.py 2.7.1), so ``AllowedMentions(users=True)`` also
+    permits @everyone/@here/role mentions — meaning any player-typed text
+    posted with it can ping the whole server. Naming the exact recipients
+    closes that regardless of what the message body contains.
+    """
+    return discord.AllowedMentions(
+        everyone=False, roles=False, users=[discord.Object(id=uid) for uid in user_ids]
+    )
 
 
 def _round_over_text(game_id: str, consequence: str) -> str:
@@ -274,12 +289,17 @@ async def _send_question_message(
     target_rolled_1: bool,
 ) -> bool:
     target_mentions = format_user_mentions(pending.participant_user_ids)
+    # Escaped once here and stored below, so every later re-render of this
+    # question (a reply posted against it, its embed) reuses the same safe
+    # text instead of re-exposing the raw markdown a player typed.
+    safe_question_text = discord.utils.escape_markdown(question_text)
     try:
         question_msg = await interaction.followup.send(
-            content=f"{target_mentions}\n<@{asker_id}> asks:\n{question_text}",
-            allowed_mentions=discord.AllowedMentions(users=True),
+            content=f"{target_mentions}\n<@{asker_id}> asks:\n{safe_question_text}",
+            allowed_mentions=_allowed_users(pending.participant_user_ids | {asker_id}),
             ephemeral=False,
             wait=True,
+            suppress_embeds=True,
             view=QuestionReplyView(),
         )
     except discord.HTTPException:
@@ -293,7 +313,7 @@ async def _send_question_message(
         guild_id=pending.guild_id,
         asker_id=asker_id,
         allowed_replier_ids=set(pending.participant_user_ids),
-        question_text=question_text,
+        question_text=safe_question_text,
         asker_rolled_100=asker_rolled_100,
         target_rolled_1=target_rolled_1,
     )
@@ -346,7 +366,7 @@ def _build_one_rule_prompt_state(game_id: str, state: RiskyRollState) -> Pending
 async def _send_and_register_prompt(send_fn, game_id: str, prompt_state: PendingQuestionState):
     message = await send_fn(
         content=build_pending_prompt_content(prompt_state),
-        allowed_mentions=discord.AllowedMentions(users=True),
+        allowed_mentions=_allowed_users(collect_prompt_mention_ids(prompt_state)),
         view=SixtyNineQuestionView(game_id),
     )
     try:
@@ -734,6 +754,15 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
 
             await interaction.response.defer(ephemeral=True)
 
+            # Escaped once here; every summary/echo built below from the
+            # question uses this, not the raw text a player typed, so a
+            # masked link can't render as a clickable label under the bot's
+            # own name. (Failure echoes back to the asker still use the raw
+            # `question_text` — those are ephemeral, seen only by whoever
+            # typed it, and reproducing exactly what they typed matters more
+            # there than escaping it does.)
+            safe_question_text = discord.utils.escape_markdown(question_text)
+
             if state.prompt_kind == PromptKind.ROOM:
                 # Create a thread from the prompt message and ping everyone who rolled.
                 channel = interaction.channel
@@ -758,15 +787,19 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                     log.exception("Failed to create thread for 69 question in game %s.", self.game_id)
                     thread_failed = True
 
-                all_mentions = format_room_mentions(state.participant_user_ids)
-                content = f"{all_mentions}\n<@{asker_id}> asks:\n{question_text}"
+                # The asker is named on the next line ("asks:"); dropping them
+                # here keeps the room list from pinging them a second time.
+                all_mentions = format_room_mentions(state.participant_user_ids, exclude=asker_id)
+                content = f"{all_mentions}\n<@{asker_id}> asks:\n{safe_question_text}"
+                room_allowed_mentions = _allowed_users(state.participant_user_ids | {asker_id})
 
                 posted_in_thread = False
                 if thread is not None:
                     try:
                         await thread.send(
                             content=content,
-                            allowed_mentions=discord.AllowedMentions(users=True),
+                            allowed_mentions=room_allowed_mentions,
+                            suppress_embeds=True,
                         )
                         posted_in_thread = True
                     except discord.HTTPException:
@@ -779,8 +812,9 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                     try:
                         await interaction.followup.send(
                             content=content,
-                            allowed_mentions=discord.AllowedMentions(users=True),
+                            allowed_mentions=room_allowed_mentions,
                             ephemeral=False,
+                            suppress_embeds=True,
                         )
                     except discord.HTTPException:
                         log.exception("Failed to post 69 question for game %s.", self.game_id)
@@ -801,7 +835,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 await disable_pending_question_message(
                     interaction.client,
                     state,
-                    build_pending_question_summary(state, question_text, asker_id),
+                    build_pending_question_summary(state, safe_question_text, asker_id),
                 )
                 if posted_in_thread:
                     done = "Question posted in a thread."
@@ -853,7 +887,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                         try:
                             await channel.get_partial_message(state.prompt_message_id).edit(
                                 content=build_pending_prompt_content(state),
-                                allowed_mentions=discord.AllowedMentions(users=True),
+                                allowed_mentions=_allowed_users(collect_prompt_mention_ids(state)),
                             )
                         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                             pass
@@ -869,7 +903,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 await disable_pending_question_message(
                     interaction.client,
                     state,
-                    build_pending_question_summary(state, question_text, asker_id),
+                    build_pending_question_summary(state, safe_question_text, asker_id),
                 )
                 await interaction.followup.send("Question sent.", ephemeral=True)
                 return
@@ -889,7 +923,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
             await disable_pending_question_message(
                 interaction.client,
                 state,
-                build_pending_question_summary(state, question_text, asker_id),
+                build_pending_question_summary(state, safe_question_text, asker_id),
             )
             target_count = len(state.participant_user_ids)
             await interaction.followup.send(
@@ -963,7 +997,11 @@ class QuestionReplyModal(discord.ui.Modal, title="Reply"):
                 )
                 return
 
-            reply_content = build_question_reply_content(state, interaction.user.id, reply_text)
+            # Escaped so a masked link in the reply can't render as a
+            # clickable label under the bot's own name — the same treatment
+            # the question text gets before it's first posted.
+            safe_reply_text = discord.utils.escape_markdown(reply_text)
+            reply_content = build_question_reply_content(state, interaction.user.id, safe_reply_text)
 
             # Answer the modal by updating the message it was opened from. That
             # goes through the interaction callback, which needs no channel
@@ -977,6 +1015,7 @@ class QuestionReplyModal(discord.ui.Modal, title="Reply"):
                     embed=None,
                     view=None,
                     allowed_mentions=discord.AllowedMentions.none(),
+                    suppress_embeds=True,
                 )
             except discord.NotFound:
                 await _clear_posted_question(self.message_id)
