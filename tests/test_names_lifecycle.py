@@ -7,7 +7,7 @@ from riskyroller import state as app_state
 from riskyroller.bot import Bot
 from riskyroller.formatters import build_embed
 from riskyroller.models import RiskyRollState
-from riskyroller.views import RiskyRollView
+from riskyroller.views import QuestionReplyView, RiskyRollView, SixtyNineQuestionView
 
 
 def _interaction(user_id: int, display_name: str) -> Mock:
@@ -202,6 +202,51 @@ class StartupGuildSweepTests(unittest.IsolatedAsyncioTestCase):
             await self.bot._sweep_guilds_left_while_offline()
 
         self.fake_store.delete_guild_data.assert_not_awaited()
+
+
+class PersistentViewFallbackTests(unittest.IsolatedAsyncioTestCase):
+    """A28: sweep_old_posted_questions / sweep_old_pending_questions clear a
+    row older than the TTL at startup, but the Discord message it came from
+    still has live buttons on it — load_posted_questions/load_pending_questions
+    never return the swept row, so setup_hook never calls add_view for that
+    exact message. discord.py then has nothing to route the press to at all,
+    and the presser gets Discord's bare "This interaction failed" with no
+    reply from the bot. A message-id-less registration of each view class is
+    discord.py's own fallback match for a press whose message has no
+    specific view — and both callbacks already look up their state by the
+    interaction's own message id (QuestionReplyView) or an empty game_id
+    (SixtyNineQuestionView) and give a real explanation when it's missing, so
+    registering the fallback is the whole fix."""
+
+    def setUp(self) -> None:
+        self.fake_store = Mock(
+            initialize=AsyncMock(),
+            sweep_old_posted_questions=AsyncMock(return_value=0),
+            sweep_old_pending_questions=AsyncMock(return_value=0),
+            load_ping_roles=AsyncMock(return_value={}),
+            load_min_game_times=AsyncMock(return_value={}),
+            load_max_games_per_channel=AsyncMock(return_value={}),
+            load_active_rounds=AsyncMock(return_value=[]),
+            load_pending_questions=AsyncMock(return_value=[]),
+            load_posted_questions=AsyncMock(return_value=[]),
+        )
+        patcher = patch.object(app_state, "store", self.fake_store)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.bot = Bot()
+        self.bot.add_view = Mock()
+        self.bot.tree.sync = AsyncMock()
+
+    async def test_setup_hook_registers_message_less_fallback_views(self) -> None:
+        await self.bot.setup_hook()
+
+        fallback_classes = {
+            type(call.args[0])
+            for call in self.bot.add_view.call_args_list
+            if call.args and call.kwargs.get("message_id") is None
+        }
+        self.assertIn(SixtyNineQuestionView, fallback_classes)
+        self.assertIn(QuestionReplyView, fallback_classes)
 
 
 if __name__ == "__main__":

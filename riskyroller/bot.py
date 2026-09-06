@@ -107,6 +107,25 @@ class Bot(discord.Client):
             app_state.posted_questions[posted.message_id] = posted
             self.add_view(QuestionReplyView(), message_id=posted.message_id)
 
+        # A question or prompt swept above for age (or from before this run
+        # entirely) still has live buttons on its original Discord message,
+        # but load_pending_questions/load_posted_questions never return the
+        # swept row, so nothing above calls add_view for that exact
+        # message_id. Without a fallback, discord.py has no view to route
+        # that press to at all — the presser gets Discord's bare "This
+        # interaction failed" and the bot never gets a chance to explain.
+        # Registering one instance of each view without a message_id is
+        # discord.py's documented catch-all: it's matched by custom_id for
+        # any press whose message_id has no specific registration. Both
+        # callbacks already look up their state by the interaction's own
+        # message id (QuestionReplyView) or an empty game_id
+        # (SixtyNineQuestionView) and answer with a real explanation
+        # (PROMPT_GONE_TEXT / REPLY_CLOSED_TEXT) when it's missing, so
+        # registering the fallback is the whole fix. Active rounds aren't
+        # swept by age, so RiskyRollView has no equivalent gap to cover.
+        self.add_view(SixtyNineQuestionView())
+        self.add_view(QuestionReplyView())
+
         if DEBUG:
             if DEBUG_GUILD_ID is None:
                 raise RuntimeError("DEBUG is enabled but GUILD_ID is missing from the environment.")
