@@ -73,7 +73,8 @@ class ReplyModalTests(unittest.IsolatedAsyncioTestCase):
             discord.HTTPException, 500, "Internal Server Error"
         )
 
-        await self._submit(interaction, "My long answer")
+        with self.assertLogs("riskyroller.views", level="ERROR"):
+            await self._submit(interaction, "My long answer")
 
         self.assertIn(555, app_state.posted_questions)
         sent = interaction.response.send_message.await_args

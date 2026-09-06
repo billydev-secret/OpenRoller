@@ -6,13 +6,11 @@ import discord
 
 from riskyroller import state as app_state
 from riskyroller.formatters import (
-    NOTICE_EMBED_COLOR,
     build_embed,
-    build_how_to_play_embed,
+    build_how_to_play_content,
     build_pending_prompt_content,
     build_pending_question_summary,
-    build_question_reply_embed,
-    build_rolloff_embed,
+    build_question_reply_content,
     auto_close_hint,
     failure_reason,
     format_duration,
@@ -445,19 +443,6 @@ class GameStatePresentationTests(unittest.TestCase):
         self.assertEqual({1: 60, 2: 60}, rounds[1])
         self.assertEqual({1: 99, 2: 10}, rounds[2])
 
-    def test_build_rolloff_embed_contains_rounds_and_winner(self) -> None:
-        embed = build_rolloff_embed(
-            tied_user_ids=[3, 1, 2],
-            rounds=[{1: 70, 2: 70, 3: 42}, {1: 88, 2: 20}],
-            winner_id=1,
-        )
-
-        self.assertIn("Tie Rolloff", embed.title or "")
-        self.assertEqual(3, len(embed.fields))
-        self.assertEqual("Round 1", embed.fields[0].name)
-        self.assertEqual("Round 2", embed.fields[1].name)
-        self.assertIn("Rolloff Winner", embed.fields[2].name)
-        self.assertEqual("<@1>", embed.fields[2].value)
 
 
 class RosterNameTests(unittest.TestCase):
@@ -655,84 +640,63 @@ class RefusalCopyHelperTests(unittest.TestCase):
         self.assertIn("I'm missing View Channel", failure_reason(lacking))
 
 
-class QuestionReplyEmbedTests(unittest.TestCase):
-    def make_state(self, **overrides) -> PostedQuestionState:
+
+
+
+
+class QuestionReplyContentTests(unittest.TestCase):
+    """The live reply text. Its embed-building predecessor had these tests
+    while it had no production callers at all; the text that players actually
+    read had none."""
+
+    def make_state(self, **kwargs) -> PostedQuestionState:
         defaults = dict(
-            message_id=12345,
-            channel_id=100,
-            guild_id=200,
+            message_id=1,
+            channel_id=2,
+            guild_id=3,
             asker_id=10,
             allowed_replier_ids={20},
             question_text="What is your favorite color?",
         )
-        defaults.update(overrides)
-        return PostedQuestionState(**defaults)  # type: ignore[arg-type]
+        defaults.update(kwargs)
+        return PostedQuestionState(**defaults)
 
-    def _field(self, embed, name):
-        for field in embed.fields:
-            if field.name == name:
-                return field
-        self.fail(f"Field {name!r} not found in embed")
+    def test_names_the_targets_the_asker_and_both_texts(self) -> None:
+        content = build_question_reply_content(self.make_state(), replier_id=20, reply_text="Blue.")
 
-    def test_standard_case_no_special_markers(self) -> None:
-        state = self.make_state()
+        self.assertIn("<@20>", content)
+        self.assertIn("<@10> asks:", content)
+        self.assertIn("What is your favorite color?", content)
+        self.assertIn("<@20>: Blue.", content)
 
-        embed = build_question_reply_embed(state, replier_id=20, reply_text="Blue.")
+    def test_both_targets_are_named_when_the_100_rule_applied(self) -> None:
+        state = self.make_state(allowed_replier_ids={20, 30}, asker_rolled_100=True)
 
-        self.assertEqual("🎲 Question", embed.title)
-        self.assertEqual("<@10>", self._field(embed, "Asks").value)
-        self.assertEqual("<@20>", self._field(embed, "Answers").value)
-        self.assertEqual("> What is your favorite color?", self._field(embed, "Question").value)
-        self.assertEqual("> Blue.", self._field(embed, "Reply").value)
+        content = build_question_reply_content(state, replier_id=20, reply_text="Blue.")
 
-    def test_100_case_shows_star_on_asker_and_both_targets(self) -> None:
-        state = self.make_state(
-            allowed_replier_ids={20, 30},
-            asker_rolled_100=True,
-        )
-
-        embed = build_question_reply_embed(state, replier_id=20, reply_text="Blue.")
-
-        self.assertEqual("<@10> ⭐", self._field(embed, "Asks").value)
-        self.assertEqual("<@20> and <@30>", self._field(embed, "Answers").value)
-        self.assertEqual("<@20>\n> Blue.", self._field(embed, "Reply").value)
-
-    def test_1_case_shows_skull_on_target(self) -> None:
-        state = self.make_state(target_rolled_1=True)
-
-        embed = build_question_reply_embed(state, replier_id=20, reply_text="Red.")
-
-        self.assertEqual("<@10>", self._field(embed, "Asks").value)
-        self.assertEqual("<@20> ☠️", self._field(embed, "Answers").value)
-        self.assertEqual("> Red.", self._field(embed, "Reply").value)
-
-    def test_single_target_reply_does_not_prepend_replier_mention(self) -> None:
-        state = self.make_state()
-
-        embed = build_question_reply_embed(state, replier_id=20, reply_text="Hi.")
-
-        self.assertEqual("> Hi.", self._field(embed, "Reply").value)
+        self.assertIn("<@20>", content)
+        self.assertIn("<@30>", content)
+        self.assertIn("<@20>: Blue.", content)
 
 
-class HowToPlayEmbedTests(unittest.TestCase):
-    def test_title_mentions_how_to_play(self) -> None:
-        embed = build_how_to_play_embed()
+class HowToPlayContentTests(unittest.TestCase):
+    """The live How to Play text — what the button actually posts."""
 
-        self.assertIn("How to Play", embed.title)
+    def test_covers_every_rule_the_round_can_apply(self) -> None:
+        content = build_how_to_play_content()
 
-    def test_description_covers_core_rules(self) -> None:
-        embed = build_how_to_play_embed()
+        self.assertIn("How to Play", content)
+        for fragment in ("Roll", "69", "100", "Rolled 1", "Close"):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, content)
 
-        description = embed.description or ""
-        self.assertIn("Roll", description)
-        self.assertIn("69", description)
-        self.assertIn("100", description)
-        self.assertIn("Rolled 1", description)
+    def test_says_a_69_beats_every_other_roll(self) -> None:
+        # resolve() short-circuits on a 69 before it ever computes a highest
+        # or lowest, so a 69 wins over a 100 and the round has no loser at
+        # all. "Highest roll wins" on its own reads as the opposite.
+        content = build_how_to_play_content()
 
-    def test_uses_notice_embed_color(self) -> None:
-        embed = build_how_to_play_embed()
-
-        self.assertEqual(NOTICE_EMBED_COLOR, embed.color)
+        self.assertIn("Beats every other roll", content)
 
 
 if __name__ == "__main__":

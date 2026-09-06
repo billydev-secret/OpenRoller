@@ -25,7 +25,7 @@
 
 ### Closing and Winner Resolution
 - **Close Round** can be pressed by whoever opened the round, or by a server admin; anyone else is told who can close it instead.
-- Both **Close Round** and the player-count auto-close (once its threshold is reached) are held back by a minimum game time — `1800` seconds (30 minutes) by default, from when the round opened. It's configurable per server with `/risky_set_min_game_time`, applies equally to the opener and to admins, and is skipped entirely for rounds started with `/risky_start_no_ping`. The minutes-based auto-close is *not* held back by this minimum — it always fires on its own clock.
+- Both **Close Round** and the player-count auto-close (once its threshold is reached) are held back by a minimum game time — `1800` seconds (30 minutes) by default, from when the round opened. It's configurable per server with `/risky_set_min_game_time`, applies equally to the opener and to admins, and is skipped entirely for rounds started with `/risky_start_no_ping`. The minutes-based auto-close is held back by it too: a round set to close after fewer minutes than the minimum waits for the minimum instead.
 - A round needs at least two rolls to produce a result; one closed early (by auto-close) with fewer just ends with no winner.
 - If the highest roll is unique, that player wins the round; the lowest roll is the loser.
 - Ties for highest (or for lowest) are settled by an automatic rolloff: the tied players re-roll among themselves until one is left, repeated separately for each side that ties.
@@ -33,7 +33,7 @@
 ### Winner Question Prompt
 Once a round closes, the bot posts a prompt with an **Ask Question** button; who it's for depends on what was rolled:
 - **Standard outcome**: the winner asks the loser one question.
-- 🔥 **Someone rolled `69`**: that player asks the whole room instead of the loser — their question opens its own thread rather than posting in the loser's place.
+- 🔥 **Someone rolled `69`**: this beats every other roll, including a `100` — that player wins however high anyone else rolled, and the round has no loser at all, so the `1` rule can't apply alongside it. They ask the whole room instead of the loser, and their question opens its own thread rather than posting in the loser's place.
 - ⭐ **The winner rolled `100`**: their question goes to the loser *and* a second player — whoever rolled lowest among everyone except the winner and loser (a rolloff settles a tie for that spot too). Only kicks in when a distinct third player exists to ask.
 - ☠️ **The loser rolled `1`**: the loser gets asked by *two* questioners instead of one — the winner, and a second questioner: whoever rolled highest among everyone except the winner and loser (again settled by rolloff if tied). The winner and the second questioner each get their own question. Only kicks in when a distinct third player exists to ask.
 - The `100` and `1` rules can both apply in the same round, if the winner rolled `100` and the loser rolled `1`.

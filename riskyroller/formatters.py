@@ -273,7 +273,11 @@ def build_embed(state: RiskyRollState, guild: "discord.Guild | None" = None) -> 
     if state.is_open and (state.auto_close_players or state.auto_close_minutes):
         parts = []
         if state.auto_close_players:
-            parts.append(f"at {state.auto_close_players} players")
+            # "From" rather than "at": reaching the player count starts the
+            # close, but a server minimum can hold it back, and rolling stays
+            # open in the meantime. The old "at N players" read as a promise
+            # that the round ends the moment the Nth player rolls.
+            parts.append(f"from {state.auto_close_players} players")
         if state.auto_close_minutes:
             parts.append(f"after {state.auto_close_minutes} minute{'s' if state.auto_close_minutes != 1 else ''}")
         embed.set_footer(text=f"Auto-closes {' or '.join(parts)}")
@@ -334,42 +338,6 @@ PROMPT_EMBED_COLOR = discord.Color(0x546E7A)
 NOTICE_EMBED_COLOR = discord.Color(0x546E7A)
 
 
-def build_question_post_embed(state: PostedQuestionState) -> discord.Embed:
-    embed = discord.Embed(title="🎲 Question", color=QUESTION_EMBED_COLOR)
-
-    asker_label = f"<@{state.asker_id}>"
-    if state.asker_rolled_100:
-        asker_label += " ⭐"
-
-    target_ids = sorted(state.allowed_replier_ids)
-    if state.target_rolled_1:
-        target_parts = [f"<@{tid}> ☠️" for tid in target_ids]
-    else:
-        target_parts = [f"<@{tid}>" for tid in target_ids]
-    answers_label = " and ".join(target_parts)
-
-    embed.add_field(name="Asks", value=asker_label, inline=True)
-    embed.add_field(name="Answers", value=answers_label, inline=True)
-    embed.add_field(name="Question", value=f"> {state.question_text}", inline=False)
-    return embed
-
-
-def build_question_reply_embed(
-    state: PostedQuestionState,
-    replier_id: int,
-    reply_text: str,
-) -> discord.Embed:
-    embed = build_question_post_embed(state)
-
-    if len(state.allowed_replier_ids) > 1:
-        reply_value = f"<@{replier_id}>\n> {reply_text}"
-    else:
-        reply_value = f"> {reply_text}"
-    embed.add_field(name="Reply", value=reply_value, inline=False)
-
-    return embed
-
-
 def build_question_reply_content(
     state: PostedQuestionState,
     replier_id: int,
@@ -410,25 +378,12 @@ def build_how_to_play_content() -> str:
         "**Win** — Highest unique roll wins the round; lowest roll is the loser.\n"
         "**Ties for highest** — Tied players auto-reroll until one wins.\n"
         "**Question** — The winner asks the loser a question; the loser must reply.\n"
-        "🔥 **Rolled 69** — The winner asks the whole room (in a thread).\n"
+        "🔥 **Rolled 69** — Beats every other roll, even a **100**: that player wins and asks the "
+        "whole room (in a thread). The round has no loser, so the **1** rule doesn't apply.\n"
         "⭐ **Rolled 100** — The winner asks the bottom 2 players.\n"
         "☠️ **Rolled 1** — The top 2 players each ask the loser.\n"
         "**Close** — Only the round opener (or an admin) can close early."
     )
-
-
-def build_how_to_play_embed() -> discord.Embed:
-    description = (
-        "**Roll** — Each player presses **Roll** once. You roll a number from **1** to **100**.\n"
-        "**Win** — Highest unique roll wins the round; lowest roll is the loser.\n"
-        "**Ties for highest** — Tied players auto-reroll until one wins.\n"
-        "**Question** — The winner asks the loser a question; the loser must reply.\n"
-        "🔥 **Rolled 69** — The winner asks the whole room (in a thread).\n"
-        "⭐ **Rolled 100** — The winner asks the bottom 2 players.\n"
-        "☠️ **Rolled 1** — The top 2 players each ask the loser.\n"
-        "**Close** — Only the round opener (or an admin) can close early."
-    )
-    return discord.Embed(title="🎲 How to Play", description=description, color=NOTICE_EMBED_COLOR)
 
 
 def build_reply_notification_embed(asker_id: int, jump_url: str) -> discord.Embed:
@@ -463,34 +418,6 @@ def collect_prompt_mention_ids(state: PendingQuestionState) -> list[int]:
     return list(dict.fromkeys(ids))
 
 
-def format_mention_list(user_ids: list[int]) -> str:
-    return " ".join(f"<@{uid}>" for uid in user_ids)
-
-
-def build_rolloff_embed(
-    tied_user_ids: list[int],
-    rounds: list[dict[int, int]],
-    winner_id: int,
-    title: str = "Tie Rolloff",
-) -> discord.Embed:
-    pick_lowest = "lowest" in title.lower()
-    embed = discord.Embed(title=f"⚔️ {title}", color=discord.Color(0xFF9800))
-    roll_label = "Lowest roll tied" if pick_lowest else "Highest roll tied"
-    embed.description = (
-        f"{roll_label} — automatic rolloff.\n"
-        f"Tied: {', '.join(f'<@{user_id}>' for user_id in sorted(set(tied_user_ids)))}"
-    )
-
-    for index, round_rolls in enumerate(rounds, start=1):
-        sorted_rolls = sorted(round_rolls.items(), key=lambda item: item[1], reverse=not pick_lowest)
-        lines = [f"🎲 **{roll}** — <@{user_id}>" for user_id, roll in sorted_rolls]
-        embed.add_field(name=f"Round {index}", value="\n".join(lines), inline=False)
-
-    winner_label = "☠️ Selected Lowest" if pick_lowest else "🏆 Rolloff Winner"
-    embed.add_field(name=winner_label, value=f"<@{winner_id}>", inline=False)
-    return embed
-
-
 async def get_text_channel(
     client: discord.Client,
     channel_id: int,
@@ -516,20 +443,3 @@ async def get_text_channel(
     return None
 
 
-async def post_rolloff_embed(
-    channel: discord.abc.Messageable | discord.abc.GuildChannel | None,
-    tied_user_ids: list[int],
-    rolloff_rounds: list[dict[int, int]],
-    winner_id: int,
-    channel_id: int,
-    title: str = "Tie Rolloff",
-) -> None:
-    try:
-        if channel is not None and isinstance(channel, (discord.TextChannel, discord.Thread)):
-            await channel.send(
-                embed=build_rolloff_embed(tied_user_ids, rolloff_rounds, winner_id, title)
-            )
-    except discord.Forbidden:
-        log.exception("Missing access posting rolloff embed in #%s.", getattr(channel, "name", channel_id))
-    except (AttributeError, discord.HTTPException):
-        log.exception("Failed to post rolloff embed in #%s.", getattr(channel, "name", channel_id))

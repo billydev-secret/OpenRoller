@@ -419,9 +419,10 @@ def setup(bot: "Bot") -> None:
         else:
             await _send_ephemeral(
                 interaction,
-                f"Minimum game time set to {format_duration(seconds)}. Rounds opened with /risky_start can't "
-                "be closed by hand, or by the player-count auto-close, any sooner; a minutes auto-close "
-                "still fires on time, and /risky_start_no_ping skips the minimum.",
+                f"Minimum game time set to {format_duration(seconds)}. No round opened with /risky_start "
+                "closes before then — not by hand, not by the player count, and not by a minutes "
+                "auto-close set shorter than this, which waits for the minimum too. Rounds opened with "
+                "/risky_start_no_ping skip the minimum entirely.",
             )
 
     @bot.tree.command(

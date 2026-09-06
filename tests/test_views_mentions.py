@@ -209,7 +209,10 @@ class QuestionMentionSecurityTests(unittest.IsolatedAsyncioTestCase):
         channel.create_thread = AsyncMock(side_effect=_http_error(discord.HTTPException, 403, "Forbidden"))
         interaction = _interaction(user_id=10, channel=channel)
 
-        await modal.on_submit(interaction)
+        # The thread failure is logged; asserting on it keeps a passing run
+        # from printing its traceback.
+        with self.assertLogs("riskyroller.views", level="ERROR"):
+            await modal.on_submit(interaction)
 
         kwargs = _content_call(interaction.followup.send).kwargs
         allowed = kwargs["allowed_mentions"].to_dict()

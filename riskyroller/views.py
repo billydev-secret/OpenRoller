@@ -59,6 +59,10 @@ REPLY_CLOSED_TEXT = (
 PROMPT_SETUP_FAILED_TEXT = (
     "This question prompt couldn't be set up, so it was cancelled. Start a new round with /risky_start."
 )
+MODAL_FAILED_TEXT = (
+    "Something went wrong handling what you typed, so it wasn't sent. Press the button again to "
+    "retry — if it keeps failing, whoever hosts this bot can find the error in its log."
+)
 ROUND_NO_PROMPT_TEXT = (
     "The round is over, but I couldn't post the question prompt, so it ends without a question. "
     "Start a new round with /risky_start. If it keeps happening, whoever hosts this bot can find "
@@ -287,7 +291,10 @@ async def _register_posted_question(posted: PostedQuestionState) -> None:
     try:
         await app_state.store.save_posted_question(posted)
     except Exception:
-        app_state.posted_questions.pop(posted.message_id, None)
+        # Keep the in-memory entry. The question is already posted with a live
+        # Reply button, and the asker has been told it went out; dropping the
+        # state here would kill that button immediately, where keeping it means
+        # replies work normally and only a restart loses the window.
         log.exception("Failed to persist posted question state for message %s.", posted.message_id)
 
 
@@ -754,6 +761,21 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
         super().__init__()
         self.game_id = game_id
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        # discord.ui.Modal's default on_error only logs to the library's own
+        # logger and never answers the person who submitted, so a crash here
+        # leaves them staring at a spinner. An expired token (10062) is
+        # ordinary noise — a slow submit, nothing to say and nowhere to say
+        # it — but anything else gets both a log line and a reply.
+        if isinstance(error, discord.NotFound) and error.code == 10062:
+            log.debug("%s expired before it was submitted.", type(self).__name__)
+            return
+        log.exception("Unhandled error in %s", type(self).__name__, exc_info=error)
+        try:
+            await _ephemeral(interaction, MODAL_FAILED_TEXT)
+        except discord.HTTPException:
+            log.debug("Could not deliver the failure notice for %s.", type(self).__name__)
+
     async def on_submit(self, interaction: discord.Interaction) -> None:
         async with app_state.get_game_lock(self.game_id):
             state = app_state.pending_questions.get(self.game_id)
@@ -1006,6 +1028,21 @@ class QuestionReplyModal(discord.ui.Modal, title="Reply"):
         super().__init__()
         self.message_id = message_id
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        # discord.ui.Modal's default on_error only logs to the library's own
+        # logger and never answers the person who submitted, so a crash here
+        # leaves them staring at a spinner. An expired token (10062) is
+        # ordinary noise — a slow submit, nothing to say and nowhere to say
+        # it — but anything else gets both a log line and a reply.
+        if isinstance(error, discord.NotFound) and error.code == 10062:
+            log.debug("%s expired before it was submitted.", type(self).__name__)
+            return
+        log.exception("Unhandled error in %s", type(self).__name__, exc_info=error)
+        try:
+            await _ephemeral(interaction, MODAL_FAILED_TEXT)
+        except discord.HTTPException:
+            log.debug("Could not deliver the failure notice for %s.", type(self).__name__)
+
     async def on_submit(self, interaction: discord.Interaction) -> None:
         async with app_state.get_message_lock(self.message_id):
             state = app_state.posted_questions.get(self.message_id)
@@ -1051,7 +1088,17 @@ class QuestionReplyModal(discord.ui.Modal, title="Reply"):
                     allowed_mentions=discord.AllowedMentions.none(),
                     suppress_embeds=True,
                 )
-            except discord.NotFound:
+            except discord.NotFound as error:
+                # 10008 is the question message itself being gone, which does
+                # close the question. 10062 is this modal's own interaction
+                # token expiring — the message is fine, and clearing the
+                # question here would destroy a live reply window over a
+                # slow submit.
+                if error.code == 10062:
+                    log.warning(
+                        "Reply modal for question %s expired before it could be answered.", self.message_id
+                    )
+                    return
                 await _clear_posted_question(self.message_id)
                 await _ephemeral(
                     interaction,

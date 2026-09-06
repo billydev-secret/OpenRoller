@@ -114,7 +114,10 @@ class CloseButtonTests(_RoundTestCase):
         _fail_the_closing_edit(interaction, _expired_interaction())
 
         view = RiskyRollView("g2")
-        await view.close_button.callback(interaction)
+        # Captured, not just tolerated: this failure must reach the log, and
+        # asserting on it also keeps a passing run from printing a traceback.
+        with self.assertLogs("riskyroller.views", level="ERROR"):
+            await view.close_button.callback(interaction)
 
         # The display update failed. What must not happen is what used to:
         # the round destroyed and the winner left with no prompt at all.
@@ -201,7 +204,10 @@ class AutoCloseRoundTests(_RoundTestCase):
         )
         client = Mock()
 
-        with patch("riskyroller.views.get_text_channel", AsyncMock(return_value=channel)):
+        with (
+            patch("riskyroller.views.get_text_channel", AsyncMock(return_value=channel)),
+            self.assertLogs("riskyroller.views", level="ERROR"),
+        ):
             await auto_close_round(client, "g6")  # must not raise
 
         # The edit failed, but the round still finishes closing rather than
