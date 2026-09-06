@@ -51,9 +51,14 @@ def format_user_mentions(user_ids: set[int]) -> str:
 ROOM_MENTION_LIMIT = 50
 
 
-def format_room_mentions(user_ids: set[int], limit: int = ROOM_MENTION_LIMIT) -> str:
-    """Mentions for a room-wide question, capped so the post always fits."""
-    ordered = sorted(user_ids)
+def format_room_mentions(user_ids: set[int], limit: int = ROOM_MENTION_LIMIT, *, exclude: int | None = None) -> str:
+    """Mentions for a room-wide question, capped so the post always fits.
+
+    `exclude` drops the asker: they're already named on the line below
+    ("<@id> asks:"), so leaving them in here would ping them twice.
+    """
+    ids = user_ids - {exclude} if exclude is not None else user_ids
+    ordered = sorted(ids)
     shown = " ".join(f"<@{uid}>" for uid in ordered[:limit])
     extra = len(ordered) - limit
     if extra > 0:
@@ -158,20 +163,26 @@ def _roll_prefix(user_id: int, roll: int, state: RiskyRollState) -> str:
     return "🎲"
 
 
-def _questioner_mentions(state: PendingQuestionState, *, asked: bool) -> str:
-    return " and ".join(
-        f"<@{uid}>"
+def _questioner_ids(state: PendingQuestionState, *, asked: bool) -> list[int]:
+    return [
+        uid
         for uid in [state.winner_id, state.extra_questioner_id]
         if uid is not None and (uid in state.questioners_asked) == asked
-    )
+    ]
+
+
+def _questioner_mentions(state: PendingQuestionState, *, asked: bool) -> str:
+    return " and ".join(f"<@{uid}>" for uid in _questioner_ids(state, asked=asked))
 
 
 def build_pending_prompt_content(state: PendingQuestionState) -> str:
     if state.prompt_kind == PromptKind.TWO_QUESTIONERS:
         target_mentions = format_user_mentions(state.participant_user_ids)
+        remaining = _questioner_ids(state, asked=False)
+        verb = "can each fire a question" if len(remaining) > 1 else "can fire a question"
         lines = [
             f"☠️ Someone rolled a **1**! {_questioner_mentions(state, asked=False)} "
-            f"can each fire a question at {target_mentions}."
+            f"{verb} at {target_mentions}."
         ]
         if state.questioners_asked:
             lines.append(f"{_questioner_mentions(state, asked=True)} already asked.")
@@ -210,6 +221,33 @@ def build_pending_question_summary(state: PendingQuestionState, question_text: s
     return f"<@{state.winner_id}> rolled 69 and asked:\n> {question_text}"
 
 
+# Discord rejects an embed field value over 1024 characters with a bare 400.
+# Escaped display names (up to 32 characters, longer once markdown-escaping
+# doubles a character) push a full roster of one-line-per-roller past that
+# once names average past roughly 30 characters, so the roster is chunked
+# into more fields instead of one field the API will refuse outright.
+EMBED_FIELD_VALUE_LIMIT = 1024
+
+
+def _chunk_field_lines(lines: list[str], limit: int = EMBED_FIELD_VALUE_LIMIT) -> list[str]:
+    """Group lines into '\\n'-joined chunks that each stay under `limit`."""
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in lines:
+        added = len(line) + (1 if current else 0)  # +1 for the joining newline
+        if current and current_len + added > limit:
+            chunks.append("\n".join(current))
+            current = [line]
+            current_len = len(line)
+        else:
+            current.append(line)
+            current_len += added
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
 def build_embed(state: RiskyRollState, guild: "discord.Guild | None" = None) -> discord.Embed:
     name = make_name_resolver(guild)
     if state.is_open:
@@ -243,7 +281,9 @@ def build_embed(state: RiskyRollState, guild: "discord.Guild | None" = None) -> 
         f"{_roll_prefix(user_id, roll, state)} **{roll}** — {name(user_id)}"
         for user_id, roll in sorted_rolls
     ]
-    embed.add_field(name=f"Rolls ({len(state.rolls)})", value="\n".join(lines), inline=False)
+    for index, chunk in enumerate(_chunk_field_lines(lines)):
+        field_name = f"Rolls ({len(state.rolls)})" if index == 0 else "Rolls (cont.)"
+        embed.add_field(name=field_name, value=chunk, inline=False)
 
     if not state.is_open and state.highest_user:
         high_mention = name(state.highest_user)
