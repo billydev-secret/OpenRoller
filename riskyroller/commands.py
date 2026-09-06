@@ -158,7 +158,13 @@ async def _start_game(
                 )
         except Exception:
             app_state.active_games.pop(state.game_id, None)
-            await app_state.store.delete_round(state.game_id)
+            try:
+                await app_state.store.delete_round(state.game_id)
+            except Exception:
+                # Don't let a store failure here replace the original error
+                # (that's the one worth seeing in the log) or skip disabling
+                # the half-posted message below.
+                log.exception("Failed to delete round %s from the store during start cleanup.", state.game_id)
             state.is_open = False
 
             if interaction.response.is_done():

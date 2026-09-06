@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from riskyroller import state as app_state
-from riskyroller.commands import MAX_ROUND_LIFETIME_MINUTES, _start_game
+from riskyroller.commands import MAX_ROUND_LIFETIME_MINUTES, SETUP_FAILED_TEXT, _start_game
 from riskyroller.invite import invite_url
 
 
@@ -162,6 +162,81 @@ class AutoCloseNormalizationTests(unittest.IsolatedAsyncioTestCase):
         state = await self._start(None, None)
         self.assertIsNone(state.auto_close_players)
         self.assertEqual(MAX_ROUND_LIFETIME_MINUTES, state.auto_close_minutes)
+
+
+class StartGamePermissionsTests(unittest.IsolatedAsyncioTestCase):
+    """The permission refusal is tested at the helper level (test_game_states,
+    via missing_start_permissions) and here, where _start_game actually
+    consults it — deleting the block from _start_game left the rest of the
+    suite green.
+    """
+
+    def setUp(self) -> None:
+        app_state.active_games.clear()
+        self.addCleanup(app_state.active_games.clear)
+
+    async def test_missing_permission_is_refused_inside_start_game(self) -> None:
+        fake_store = _fake_store("save_round")
+        with (
+            patch.object(app_state, "store", fake_store),
+            patch("riskyroller.commands.schedule_auto_close", AsyncMock()),
+        ):
+            interaction = _permissive_interaction()
+            interaction.app_permissions = Mock(view_channel=True, send_messages=False, embed_links=True)
+
+            await _start_game(
+                interaction, auto_close_players=25, auto_close_minutes=120, ping=False, skip_min_game_time=False
+            )
+
+        interaction.response.send_message.assert_awaited_once()
+        text = interaction.response.send_message.await_args.args[0]
+        self.assertIn("can't run a round here", text)
+        self.assertEqual({}, app_state.active_games)
+
+
+class StartGameFailureTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        app_state.active_games.clear()
+        self.addCleanup(app_state.active_games.clear)
+
+    async def test_a_failed_start_pops_the_game_deletes_the_row_and_disables_the_message(self) -> None:
+        fake_store = _fake_store("save_round", "delete_round")
+        fake_store.save_round = AsyncMock(side_effect=RuntimeError("db is gone"))
+        with patch.object(app_state, "store", fake_store):
+            interaction = _permissive_interaction()
+            # The initial response succeeded and the failure happens after
+            # (persisting the round), so by the time the except block runs
+            # the interaction really is done.
+            interaction.response.is_done = Mock(return_value=True)
+            failing_message = interaction.original_response.return_value
+            failing_message.edit = AsyncMock()
+
+            with self.assertRaises(RuntimeError):
+                await _start_game(
+                    interaction, auto_close_players=25, auto_close_minutes=120, ping=False, skip_min_game_time=False
+                )
+
+        self.assertEqual({}, app_state.active_games)
+        fake_store.delete_round.assert_awaited_once()
+        failing_message.edit.assert_awaited_once()
+        self.assertEqual(SETUP_FAILED_TEXT, failing_message.edit.await_args.kwargs["content"])
+
+    async def test_a_failing_delete_round_does_not_mask_the_original_error_or_skip_cleanup(self) -> None:
+        fake_store = _fake_store("save_round", "delete_round")
+        fake_store.delete_round = AsyncMock(side_effect=RuntimeError("store boom"))
+        with patch.object(app_state, "store", fake_store):
+            interaction = _permissive_interaction()
+            interaction.response.send_message = AsyncMock(side_effect=RuntimeError("original boom"))
+            interaction.response.is_done = Mock(return_value=False)
+
+            with self.assertRaises(RuntimeError) as ctx:
+                await _start_game(
+                    interaction, auto_close_players=25, auto_close_minutes=120, ping=False, skip_min_game_time=False
+                )
+
+        self.assertEqual("original boom", str(ctx.exception))
+        self.assertEqual({}, app_state.active_games)
+        fake_store.delete_round.assert_awaited_once()
 
 
 if __name__ == "__main__":
