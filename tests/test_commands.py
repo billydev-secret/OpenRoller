@@ -68,7 +68,7 @@ class StartGameGuardTests(unittest.IsolatedAsyncioTestCase):
         fake_store = _fake_store("save_round")
         with (
             patch.object(app_state, "store", fake_store),
-            patch("riskyroller.commands.schedule_auto_close", AsyncMock()),
+            patch("riskyroller.commands.arm_auto_close", Mock()),
         ):
             interaction = Mock()
             interaction.guild.id = 200
@@ -98,7 +98,7 @@ class StartGameGuardTests(unittest.IsolatedAsyncioTestCase):
         fake_store = _fake_store("save_round")
         with (
             patch.object(app_state, "store", fake_store),
-            patch("riskyroller.commands.schedule_auto_close", AsyncMock()),
+            patch("riskyroller.commands.arm_auto_close", Mock()),
         ):
             interaction = _permissive_interaction()
             await _start_game(
@@ -126,8 +126,10 @@ class AutoCloseNormalizationTests(unittest.IsolatedAsyncioTestCase):
         store_patcher = patch.object(app_state, "store", self.fake_store)
         store_patcher.start()
         self.addCleanup(store_patcher.stop)
-        self.schedule_mock = AsyncMock()
-        schedule_patcher = patch("riskyroller.commands.schedule_auto_close", self.schedule_mock)
+        # arm_auto_close is synchronous: it creates the task and registers
+        # the done-callback, so a plain Mock is the right stand-in.
+        self.schedule_mock = Mock()
+        schedule_patcher = patch("riskyroller.commands.arm_auto_close", self.schedule_mock)
         schedule_patcher.start()
         self.addCleanup(schedule_patcher.stop)
 
@@ -168,8 +170,6 @@ class AutoCloseNormalizationTests(unittest.IsolatedAsyncioTestCase):
         state = await self._start(0, 0)
         self.assertIsNone(state.auto_close_players)
         self.assertEqual(MAX_ROUND_LIFETIME_MINUTES, state.auto_close_minutes)
-        # create_task schedules schedule_auto_close but doesn't run it before
-        # returning, so its call (not await) is what's observable here.
         self.schedule_mock.assert_called_once()
         self.assertEqual(MAX_ROUND_LIFETIME_MINUTES * 60, self.schedule_mock.call_args.args[2])
 
@@ -194,7 +194,7 @@ class StartGamePermissionsTests(unittest.IsolatedAsyncioTestCase):
         fake_store = _fake_store("save_round")
         with (
             patch.object(app_state, "store", fake_store),
-            patch("riskyroller.commands.schedule_auto_close", AsyncMock()),
+            patch("riskyroller.commands.arm_auto_close", Mock()),
         ):
             interaction = _permissive_interaction()
             interaction.app_permissions = Mock(view_channel=True, send_messages=False, embed_links=True)
@@ -227,7 +227,7 @@ class StartGameCapTests(unittest.IsolatedAsyncioTestCase):
         fake_store = _fake_store("save_round")
         with (
             patch.object(app_state, "store", fake_store),
-            patch("riskyroller.commands.schedule_auto_close", AsyncMock()),
+            patch("riskyroller.commands.arm_auto_close", Mock()),
         ):
             interaction = _permissive_interaction(guild_id=300, channel_id=100)
             await _start_game(
@@ -245,7 +245,7 @@ class StartGameCapTests(unittest.IsolatedAsyncioTestCase):
         fake_store = _fake_store("save_round")
         with (
             patch.object(app_state, "store", fake_store),
-            patch("riskyroller.commands.schedule_auto_close", AsyncMock()),
+            patch("riskyroller.commands.arm_auto_close", Mock()),
         ):
             interaction = _permissive_interaction(guild_id=301, channel_id=101)
             await _start_game(
@@ -427,7 +427,7 @@ class StartGameChannelTypeTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(app_state, "store", fake_store),
-            patch("riskyroller.commands.schedule_auto_close", AsyncMock()),
+            patch("riskyroller.commands.arm_auto_close", Mock()),
         ):
             await _start_game(
                 interaction,

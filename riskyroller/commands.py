@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -11,7 +10,13 @@ from .formatters import build_embed, format_duration, join_names, permission_hel
 from .invite import invite_url
 from .logic import missing_start_permissions
 from .models import RiskyRollState
-from .views import RiskyRollView, disable_pending_question_message, disable_round_message, schedule_auto_close
+from .views import (
+    RiskyRollView,
+    arm_auto_close,
+    disable_pending_question_message,
+    disable_round_message,
+    forget_stored,
+)
 
 if TYPE_CHECKING:
     from .bot import Bot
@@ -167,9 +172,7 @@ async def _start_game(
             await app_state.store.save_round(state)
 
             if close_minutes:
-                app_state.auto_close_tasks[state.game_id] = asyncio.create_task(
-                    schedule_auto_close(interaction.client, state.game_id, close_minutes * 60)
-                )
+                arm_auto_close(interaction.client, state.game_id, close_minutes * 60)
         except Exception:
             app_state.active_games.pop(state.game_id, None)
             try:
@@ -286,7 +289,7 @@ async def _reset_channel_state(interaction: discord.Interaction) -> None:
                 if state is not None:
                     state.is_open = False
                     await disable_round_message(state, interaction.channel)
-                await app_state.store.delete_round(game_id)
+                await forget_stored(app_state.store.delete_round, game_id, f"round {game_id}")
 
         for game_id in question_ids:
             async with app_state.get_game_lock(game_id):
@@ -297,11 +300,17 @@ async def _reset_channel_state(interaction: discord.Interaction) -> None:
                     pending_state,
                     "This question prompt was cancelled by an administrator's reset. Start a new round to play again.",
                 )
-            await app_state.store.delete_pending_question(game_id)
+            await forget_stored(app_state.store.delete_pending_question, game_id, f"prompt {game_id}")
 
         for message_id in posted_message_ids:
-            app_state.posted_questions.pop(message_id, None)
-            await app_state.store.delete_posted_question(message_id)
+            # Under the message lock, like the reply modal holds for its whole
+            # body — otherwise a reply already in flight posts publicly, and
+            # tells its author it was sent, after the admin reset it.
+            async with app_state.get_message_lock(message_id):
+                app_state.posted_questions.pop(message_id, None)
+                await forget_stored(
+                    app_state.store.delete_posted_question, message_id, f"posted question {message_id}"
+                )
 
         def plural(n: int, noun: str) -> str:
             return f"{n} {noun}{'s' if n != 1 else ''}"

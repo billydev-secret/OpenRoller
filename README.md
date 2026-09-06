@@ -133,7 +133,7 @@ The bot stores state in SQLite:
 
 Schema initialization and lightweight migrations run on startup. When the bot is removed from a guild, every row above scoped to that guild is deleted immediately.
 
-One thing the database above doesn't cover: an in-memory cache of player display names, used so round and question embeds can show a name instead of a raw ID for someone who has since left the server. It's keyed by user ID rather than by guild, holds whatever name was last seen across every server the bot shares with that person, and is **not** cleared when the bot leaves a guild — only a restart clears it.
+One thing the database above doesn't cover: an in-memory cache of player display names, used so round and question embeds can show a name instead of a raw ID for someone who has since left the server. It's keyed by server *and* user, so a name captured in one server is never shown in another, and a server's entries are dropped when the bot is removed from it. Nothing in this cache is written to disk — a restart clears whatever is left.
 
 The database runs in WAL mode, so `-wal` and `-shm` files sit next to the `.sqlite3` file while the bot is running; include them if you copy the database while the bot is up.
 

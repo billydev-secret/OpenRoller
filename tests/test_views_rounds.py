@@ -1,10 +1,13 @@
+import inspect
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import aiohttp
 import discord
 
 from riskyroller import state as app_state
+from riskyroller import views
 from riskyroller.models import RiskyRollState
 from riskyroller.views import RiskyRollView, _build_one_rule_prompt_state, auto_close_round
 
@@ -274,6 +277,27 @@ class OneRulePromptTests(unittest.TestCase):
 
     def test_no_prompt_when_the_lowest_roll_is_not_a_1(self) -> None:
         self.assertIsNone(_build_one_rule_prompt_state("g", self._state({10: 90, 20: 50, 30: 2})))
+
+
+class AutoCloseTaskArmingTests(unittest.TestCase):
+    """Every auto-close task must carry the done-callback that retrieves its
+    exception; without it a failure surfaces only as asyncio's "Task exception
+    was never retrieved". Three of the five call sites once missed it, so the
+    guard is structural: there is exactly one place that creates these tasks.
+    """
+
+    def test_arm_auto_close_is_the_only_task_creator(self) -> None:
+        package = Path(views.__file__).parent
+        sites = [
+            f"{path.name}:{number}"
+            for path in sorted(package.glob("*.py"))
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            if "asyncio.create_task(" in line
+        ]
+
+        self.assertEqual(1, len(sites), f"expected one task-creation site, found {sites}")
+        self.assertIn("asyncio.create_task(", inspect.getsource(views.arm_auto_close))
+        self.assertIn("add_done_callback", inspect.getsource(views.arm_auto_close))
 
 
 if __name__ == "__main__":

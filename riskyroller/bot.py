@@ -10,7 +10,7 @@ from . import state as app_state
 from .config import DEBUG, DEBUG_GUILD_ID, DEFAULT_MIN_GAME_SECONDS, SYNC_COMMANDS_ON_STARTUP
 from .invite import invite_url
 from .logic import effective_min_game_seconds
-from .views import QuestionReplyView, RiskyRollView, SixtyNineQuestionView, schedule_auto_close
+from .views import QuestionReplyView, RiskyRollView, SixtyNineQuestionView, arm_auto_close
 
 log = logging.getLogger(__name__)
 
@@ -67,9 +67,7 @@ class Bot(discord.Client):
                         app_state.min_game_seconds, state.guild_id, state.skip_min_game_time, DEFAULT_MIN_GAME_SECONDS
                     )
                     remaining = max(0.0, min_seconds - elapsed)
-                    app_state.auto_close_tasks[state.game_id] = asyncio.create_task(
-                        schedule_auto_close(self, state.game_id, remaining)
-                    )
+                    arm_auto_close(self, state.game_id, remaining)
                     log.info(
                         "Restored auto-close for game %s: player threshold already met (%d/%d), closing in %.0fs.",
                         state.game_id,
@@ -80,9 +78,7 @@ class Bot(discord.Client):
                 elif state.auto_close_minutes:
                     elapsed = time.time() - state.created_at
                     remaining = max(0.0, state.auto_close_minutes * 60 - elapsed)
-                    app_state.auto_close_tasks[state.game_id] = asyncio.create_task(
-                        schedule_auto_close(self, state.game_id, remaining)
-                    )
+                    arm_auto_close(self, state.game_id, remaining)
                     log.info(
                         "Restored auto-close timer for game %s (%.0fs remaining).",
                         state.game_id,
@@ -202,7 +198,11 @@ class Bot(discord.Client):
                 app_state.pending_questions.pop(game_id, None)
 
         for message_id in [mid for mid, s in app_state.posted_questions.items() if s.guild_id == guild_id]:
-            app_state.posted_questions.pop(message_id, None)
+            # Under the message lock, as the reply modal holds for its whole
+            # body, so a reply already in flight can't post publicly after
+            # this guild's data is gone.
+            async with app_state.get_message_lock(message_id):
+                app_state.posted_questions.pop(message_id, None)
 
         try:
             await app_state.store.delete_guild_data(guild_id)
