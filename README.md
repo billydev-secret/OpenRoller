@@ -93,7 +93,9 @@ The `/invite` command only works once the bot is already in a server, so for the
 https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID&scope=bot+applications.commands&permissions=309237664768
 ```
 
-That grants exactly what the bot needs: View Channel, Send Messages, Embed Links, Create Public Threads, Send Messages in Threads. Channels hidden from `@everyone` still need the bot's role added to them. Globally registered slash commands can take up to an hour to appear; set `DEBUG=true` and `GUILD_ID` while testing to have them appear in one server immediately.
+That grants exactly what the bot needs: View Channel, Send Messages, Embed Links, Create Public Threads, Send Messages in Threads. Channels hidden from `@everyone` still need the bot's role added to them.
+
+If you publish an install link — the Developer Portal's **Installation → Default Install Settings**, or a bot-list page — make sure its guild install includes the `bot` scope with those same permissions. A link with `applications.commands` alone installs the slash commands without the bot account, and `/risky_start` will say so instead of running. Globally registered slash commands can take up to an hour to appear; set `DEBUG=true` and `GUILD_ID` while testing to have them appear in one server immediately.
 
 ## Running
 ```bash

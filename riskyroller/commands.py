@@ -51,6 +51,21 @@ async def _start_game(
         await _send_ephemeral(interaction, NOT_IN_SERVER_CHANNEL_TEXT)
         return
 
+    if interaction.guild.me is None:
+        # Installed with the applications.commands scope only: the slash
+        # commands exist but there is no bot account in the server, so nothing
+        # the bot posts on its own can land. No permission grant fixes that;
+        # re-authorising with the bot scope does, and keeps the settings.
+        client = interaction.client
+        application_id = client.application_id or (client.user.id if client.user else None)
+        link = f" Re-add me with this link, which keeps your settings: <{invite_url(application_id)}>" if application_id else ""
+        await _send_ephemeral(
+            interaction,
+            "I'm installed on this server with slash commands only — my bot account was never added, so I "
+            f"can't post the round or anything after it.{link}",
+        )
+        return
+
     missing = missing_start_permissions(interaction.app_permissions)
     if missing:
         command = interaction.command.qualified_name if interaction.command else "risky_start"
