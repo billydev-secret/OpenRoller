@@ -75,6 +75,15 @@ class StateStore:
                     conn.execute("ALTER TABLE pending_questions ADD COLUMN questioners_asked TEXT")
                 if "created_at" not in pq_columns:
                     conn.execute("ALTER TABLE pending_questions ADD COLUMN created_at REAL")
+                    # Every row that exists at this exact moment was written
+                    # before the column did, but that does not make it old —
+                    # it may be a prompt posted seconds ago. Backfill "now"
+                    # rather than leaving it NULL for the sweep to treat as
+                    # ancient.
+                    conn.execute(
+                        "UPDATE pending_questions SET created_at = ? WHERE created_at IS NULL",
+                        (time.time(),),
+                    )
 
             if "guild_settings" in existing_tables:
                 gs_columns = {row["name"] for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
@@ -87,6 +96,10 @@ class StateStore:
                 pq_columns = {row["name"] for row in conn.execute("PRAGMA table_info(posted_questions)").fetchall()}
                 if "created_at" not in pq_columns:
                     conn.execute("ALTER TABLE posted_questions ADD COLUMN created_at INTEGER")
+                    conn.execute(
+                        "UPDATE posted_questions SET created_at = ? WHERE created_at IS NULL",
+                        (int(time.time()),),
+                    )
 
             conn.executescript(
                 """
@@ -582,16 +595,16 @@ class StateStore:
     def _sweep_old_pending_questions(self, max_age_seconds: int) -> int:
         """Drop prompts whose winner never pressed Ask Question.
 
-        NULL ``created_at`` is swept, unlike the posted-question sweep just
-        above which skips it. The difference is deliberate: this column was
-        added later, so a NULL here means "written before the column existed"
-        — genuinely old — while over there the column has always been written
-        and a NULL would be corruption.
+        ``created_at`` is always populated: new rows get it from the model
+        default, and the migration backfills "now" onto any row left over
+        from before the column existed (see ``_initialize``). So a NULL row
+        here is never the ordinary case, and — like the posted-question
+        sweep just above — is left alone rather than treated as stale.
         """
         cutoff = time.time() - max_age_seconds
         with self._connect() as conn:
             cursor = conn.execute(
-                "DELETE FROM pending_questions WHERE created_at IS NULL OR created_at < ?",
+                "DELETE FROM pending_questions WHERE created_at < ?",
                 (cutoff,),
             )
             return cursor.rowcount or 0

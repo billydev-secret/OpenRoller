@@ -429,20 +429,87 @@ class StoreTests(unittest.TestCase):
         loaded = run(self.store.load_pending_questions())
         self.assertEqual(["new"], [s.game_id for s in loaded])
 
-    def test_sweep_old_pending_questions_treats_null_created_at_as_stale(self) -> None:
-        # A row written before the column existed has no timestamp; it is old
-        # by definition and must not survive the sweep forever.
-        with sqlite3.connect(self.db_path) as conn:
+    def test_sweep_old_pending_questions_does_not_treat_null_as_stale(self) -> None:
+        # created_at is always backfilled the moment the column is added
+        # (see the migration test below), so a NULL row here is not the
+        # ordinary "written before the column existed" case any more. It
+        # must not be swept just for lacking a timestamp.
+        with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute(
                 "INSERT INTO pending_questions "
                 "(game_id, channel_id, guild_id, winner_id, participant_user_ids, created_at) "
                 "VALUES ('legacy', 1, 2, 3, '4', NULL)"
             )
+            conn.commit()
 
         swept = run(self.store.sweep_old_pending_questions(7 * 86400))
 
-        self.assertEqual(1, swept)
-        self.assertEqual([], run(self.store.load_pending_questions()))
+        self.assertEqual(0, swept)
+        self.assertEqual(["legacy"], [s.game_id for s in run(self.store.load_pending_questions())])
+
+    def test_initialize_backfills_created_at_for_legacy_pending_questions(self) -> None:
+        # A pre-migration DB has pending_questions with no created_at column
+        # at all. The very first boot after this branch deploys must not
+        # treat every in-flight prompt as infinitely old: initialize() has
+        # to backfill "now", not leave the new column NULL for the sweep to
+        # find.
+        fd, path = tempfile.mkstemp(suffix=".sqlite3")
+        self.addCleanup(os.unlink, path)
+        os.close(fd)
+        with contextlib.closing(sqlite3.connect(path)) as conn:
+            conn.execute(
+                "CREATE TABLE pending_questions ("
+                "game_id TEXT PRIMARY KEY, channel_id INTEGER NOT NULL, guild_id INTEGER NOT NULL, "
+                "winner_id INTEGER NOT NULL, prompt_message_id INTEGER, "
+                "participant_user_ids TEXT NOT NULL, lowest_tie_user_ids TEXT, "
+                "prompt_kind TEXT NOT NULL DEFAULT 'room')"
+            )
+            conn.execute(
+                "INSERT INTO pending_questions "
+                "(game_id, channel_id, guild_id, winner_id, participant_user_ids) "
+                "VALUES ('live', 1, 2, 3, '4')"
+            )
+            conn.commit()
+
+        store = StateStore(path)
+        run(store.initialize())
+
+        swept = run(store.sweep_old_pending_questions(7 * 86400))
+
+        self.assertEqual(0, swept)
+        self.assertEqual(["live"], [s.game_id for s in run(store.load_pending_questions())])
+
+    def test_initialize_backfills_created_at_for_legacy_posted_questions(self) -> None:
+        # Mirror image of the pending-question backfill: a posted_questions
+        # row from before the column existed must get a real timestamp on
+        # migration too, or it is retained forever instead of eventually
+        # aging out like every other row.
+        fd, path = tempfile.mkstemp(suffix=".sqlite3")
+        self.addCleanup(os.unlink, path)
+        os.close(fd)
+        with contextlib.closing(sqlite3.connect(path)) as conn:
+            conn.execute(
+                "CREATE TABLE posted_questions ("
+                "message_id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL, guild_id INTEGER NOT NULL, "
+                "asker_id INTEGER NOT NULL, allowed_replier_ids TEXT NOT NULL, question_text TEXT NOT NULL, "
+                "asker_rolled_100 INTEGER NOT NULL DEFAULT 0, target_rolled_1 INTEGER NOT NULL DEFAULT 0)"
+            )
+            conn.execute(
+                "INSERT INTO posted_questions "
+                "(message_id, channel_id, guild_id, asker_id, allowed_replier_ids, question_text) "
+                "VALUES (1, 100, 200, 300, '400', 'q')"
+            )
+            conn.commit()
+
+        store = StateStore(path)
+        before = int(time.time())
+        run(store.initialize())
+
+        with contextlib.closing(sqlite3.connect(path)) as conn:
+            row = conn.execute("SELECT created_at FROM posted_questions WHERE message_id = 1").fetchone()
+
+        self.assertIsNotNone(row[0])
+        self.assertGreaterEqual(row[0], before)
 
     def test_pending_question_created_at_survives_resave(self) -> None:
         # The two-questioner prompt re-saves after the first question; the
