@@ -1,11 +1,21 @@
 import io
+import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import discord
 
 from riskyroller import __main__ as entrypoint
 from riskyroller import config
+
+# riskyroller/config.py's .env lookup runs once, at import time, so testing
+# it against a chosen working directory means importing the real module in a
+# fresh subprocess with that directory as cwd -- there is no way to make the
+# already-imported module in *this* process re-run its own import statement.
+_REPO_ROOT = Path(config.__file__).resolve().parent.parent
 
 
 class MainTests(unittest.TestCase):
@@ -16,6 +26,19 @@ class MainTests(unittest.TestCase):
         patcher = mock.patch.object(entrypoint, "configure_logging")
         patcher.start()
         self.addCleanup(patcher.stop)
+
+        # FINDING A95: config.CONFIG_ERRORS/DEBUG/DEBUG_GUILD_ID are computed
+        # once from the real environment (and whatever .env is found) at
+        # import time, so without a known baseline these tests would pass or
+        # fail depending on whatever happens to be set wherever the suite
+        # runs. Give every test the same clean slate; a test that cares about
+        # a different value patches it itself, layered on top of this one.
+        config.CONFIG_ERRORS.clear()
+        self.addCleanup(config.CONFIG_ERRORS.clear)
+        for name, value in (("DEBUG", False), ("DEBUG_GUILD_ID", None)):
+            baseline = mock.patch.object(config, name, value)
+            baseline.start()
+            self.addCleanup(baseline.stop)
 
     def _run_main(self) -> tuple[int, str]:
         stderr = io.StringIO()
@@ -109,6 +132,60 @@ class IntEnvTests(unittest.TestCase):
         self.assertEqual(1, len(config.CONFIG_ERRORS))
         self.assertIn("GUILD_ID", config.CONFIG_ERRORS[0])
         self.assertIn("your_debug_guild_id_optional", config.CONFIG_ERRORS[0])
+
+
+class DotenvLookupTests(unittest.TestCase):
+    """FINDING C0-8: config.py's .env lookup must still find an install's
+    .env when the process working directory has none of its own, so an
+    existing install whose launcher never `cd`s into the repo (a systemd unit
+    with no WorkingDirectory=, a cron line, a scheduled task with "Start in"
+    blank) keeps working after an upgrade. Exercises the real riskyroller
+    package (via a repo-root .env, since that is what config.py's own
+    file-relative search walks up to), not a copy of its lookup line."""
+
+    def setUp(self) -> None:
+        self._repo_env = _REPO_ROOT / ".env"
+        self.assertFalse(
+            self._repo_env.exists(),
+            "a real .env is already sitting in the checkout; refusing to overwrite it",
+        )
+        self.addCleanup(lambda: self._repo_env.unlink(missing_ok=True))
+
+    def _run_probe(self, cwd: str) -> str:
+        # A real script file, not `python -c`: dotenv's own find_dotenv()
+        # treats a `-c` invocation as interactive (no __main__.__file__) and
+        # always searches from the cwd, which would mask exactly the
+        # file-relative fallback these tests exist to check -- and does not
+        # match how the bot is actually started (`-m riskyroller`, the
+        # installed console script, or `python main.py`, all of which have a
+        # real __main__.__file__).
+        probe = Path(cwd) / "probe.py"
+        probe.write_text("import riskyroller.config, os\nprint(os.environ.get('DOTENV_LOOKUP_PROBE', ''))\n")
+        result = subprocess.run(
+            [sys.executable, str(probe)],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(_REPO_ROOT)},  # no ambient DOTENV_LOOKUP_PROBE
+            check=True,
+        )
+        return result.stdout.strip()
+
+    def test_falls_back_to_file_relative_search_when_cwd_has_no_env(self) -> None:
+        self._repo_env.write_text("DOTENV_LOOKUP_PROBE=from-repo\n")
+
+        with tempfile.TemporaryDirectory() as cwd_dir:
+            self.assertEqual("from-repo", self._run_probe(cwd_dir))
+
+    def test_working_directory_env_wins_when_present(self) -> None:
+        # FINDING C0-10: when both exist, the working-directory .env is
+        # found first and wins -- documented here, not just in the comment.
+        self._repo_env.write_text("DOTENV_LOOKUP_PROBE=from-repo\n")
+
+        with tempfile.TemporaryDirectory() as cwd_dir:
+            (Path(cwd_dir) / ".env").write_text("DOTENV_LOOKUP_PROBE=from-cwd\n")
+
+            self.assertEqual("from-cwd", self._run_probe(cwd_dir))
 
 
 if __name__ == "__main__":

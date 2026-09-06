@@ -2,11 +2,18 @@ import os
 
 from dotenv import find_dotenv, load_dotenv
 
-# Search for .env from the working directory, not from this file. Once the
-# package is installed into site-packages a search from here would never reach
-# the .env in the directory the bot is started from, which is where the README
-# says it lives.
-load_dotenv(find_dotenv(usecwd=True))
+# Search for .env from the working directory first -- once the package is
+# installed into site-packages, a search anchored on this file would never
+# reach the .env in the directory the bot is started from, which is where the
+# README says it lives. Fall back to the old file-relative search (anchored on
+# this file's own directory, walking up) when the working directory has none,
+# so an existing install whose launcher does not cd into the repo -- a systemd
+# unit with no WorkingDirectory=, a cron line, a scheduled task with "Start
+# in" blank -- still finds the .env next to the code, as it did before this
+# cwd-first search was added. If a directory above the working directory and
+# a directory above this file both have a .env, the working-directory search
+# wins even when it is the less-related file, since it runs first.
+load_dotenv(find_dotenv(usecwd=True) or find_dotenv())
 
 # Problems found while reading the environment. Recorded rather than raised so
 # importing this module never crashes; the entrypoint prints them and exits
