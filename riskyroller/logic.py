@@ -77,10 +77,13 @@ def effective_min_game_seconds(
 ) -> int:
     """How long a round in *guild_id* must stay open before it can close.
 
-    One lookup for both close paths — the opener's Close Round button and the
-    auto-close that fires once enough players have rolled — so they cannot
-    disagree. A server that never set a value gets *default*; a server that
-    set 0 gets 0, which disables the minimum for both paths.
+    One lookup for every close path, so a server's configured value can never
+    mean one thing to the Close button and another to the auto-close. A server
+    that set 0 gets 0; a server that never set anything gets *default*, and
+    that is where the paths deliberately differ: the auto-close passes
+    DEFAULT_MIN_GAME_SECONDS, so a round doesn't end the instant the last
+    expected player rolls, while the Close button passes 0, because a default
+    nobody chose shouldn't stop the opener closing their own round.
     ``skip_min_game_time`` is the per-round opt-out and wins outright.
     """
     if skip_min_game_time:

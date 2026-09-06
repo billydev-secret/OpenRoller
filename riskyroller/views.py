@@ -660,28 +660,29 @@ class RiskyRollView(BaseRiskyRollView):
                 )
                 return
 
+            # Default 0, not DEFAULT_MIN_GAME_SECONDS: only a minimum a server
+            # actually chose holds this button. The default exists so an
+            # automatic close doesn't end a round the instant the last
+            # expected player rolls; holding back a person who was given the
+            # authority to close their own round is a different thing, and
+            # nobody asked for it.
             min_seconds = effective_min_game_seconds(
-                app_state.min_game_seconds, state.guild_id, state.skip_min_game_time, DEFAULT_MIN_GAME_SECONDS
+                app_state.min_game_seconds, state.guild_id, state.skip_min_game_time, 0
             )
             if min_seconds:
                 elapsed = time.time() - state.created_at
                 remaining = math.ceil(min_seconds - elapsed)
                 if remaining > 0:
                     hint = auto_close_hint(state)
-                    origin = (
-                        "This server's minimum"
-                        if state.guild_id in app_state.min_game_seconds
-                        else "The default minimum"
-                    )
                     # "Locked" rather than "stays open": a minutes auto-close
                     # shorter than the minimum still fires, and the hint may
                     # say so in the same breath.
                     await _ephemeral(
                         interaction,
-                        f"This round can't be closed by hand for another {format_duration(remaining)}: {origin} "
-                        f"keeps **Close Round** locked for the first {format_duration(min_seconds)} so everyone "
-                        f"gets a chance to roll.{' ' + hint if hint else ''} Admins can change the minimum with "
-                        "/risky_set_min_game_time; /risky_start_no_ping opens a round without one.",
+                        f"This round can't be closed by hand for another {format_duration(remaining)}: this "
+                        f"server keeps **Close Round** locked for the first {format_duration(min_seconds)} so "
+                        f"everyone gets a chance to roll.{' ' + hint if hint else ''} Admins can change that "
+                        "with /risky_set_min_game_time; /risky_start_no_ping opens a round without it.",
                     )
                     return
 

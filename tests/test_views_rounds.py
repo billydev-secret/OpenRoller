@@ -300,5 +300,52 @@ class AutoCloseTaskArmingTests(unittest.TestCase):
         self.assertIn("add_done_callback", inspect.getsource(views.arm_auto_close))
 
 
+class CloseButtonMinimumTests(_RoundTestCase):
+    """Only a minimum the server actually chose holds Close Round. The default
+    exists so an automatic close doesn't end a round the instant the last
+    expected player rolls — it was never meant to stop the opener."""
+
+    def _open_round(self, game_id: str) -> None:
+        state = RiskyRollState(
+            channel_id=100, guild_id=200, opener_id=10, game_id=game_id,
+            message_id=999, rolls={10: 80, 20: 30},
+        )
+        app_state.active_games[game_id] = state
+
+    def setUp(self) -> None:
+        super().setUp()
+        app_state.min_game_seconds.clear()
+        self.addCleanup(app_state.min_game_seconds.clear)
+
+    async def test_a_server_with_no_minimum_can_close_at_once(self) -> None:
+        self._open_round("m1")
+        interaction = _make_interaction(10)
+
+        await RiskyRollView("m1").close_button.callback(interaction)
+
+        interaction.edit_original_response.assert_awaited_once()
+        self.assertNotIn("m1", app_state.active_games)
+
+    async def test_a_configured_minimum_still_holds_it(self) -> None:
+        app_state.min_game_seconds[200] = 1800
+        self._open_round("m2")
+        interaction = _make_interaction(10)
+
+        await RiskyRollView("m2").close_button.callback(interaction)
+
+        interaction.edit_original_response.assert_not_awaited()
+        self.assertIn("m2", app_state.active_games)
+        self.assertIn("can't be closed by hand", interaction.followup.send.await_args.args[0])
+
+    async def test_a_configured_zero_closes_at_once(self) -> None:
+        app_state.min_game_seconds[200] = 0
+        self._open_round("m3")
+        interaction = _make_interaction(10)
+
+        await RiskyRollView("m3").close_button.callback(interaction)
+
+        interaction.edit_original_response.assert_awaited_once()
+
+
 if __name__ == "__main__":
     unittest.main()
