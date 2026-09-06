@@ -16,16 +16,21 @@ def mention(user_id: int) -> str:
     return f"<@{user_id}>"
 
 
-def make_name_resolver(guild: "discord.Guild | None") -> NameFn:
+def make_name_resolver(guild: "discord.Guild | None", guild_id: int) -> NameFn:
     """Return a resolver that prints a player's display name as plain text.
 
     An embed mention is resolved by the *reading* client from its own member
     cache, so ``<@id>`` renders as a bare number to anyone who hasn't seen that
-    user — mainly people who have since left. The live guild cache is tried
-    first (and memoised, so a player who leaves mid-round keeps the name we
-    saw), then the names captured when players rolled, then a mention as the
-    last resort. Names are markdown-escaped so a ``_`` or ``*`` in a nickname
-    can't restyle the roster.
+    user — mainly people who have since left. The live guild cache is checked
+    first, but under this bot's default intents that cache holds voice state
+    only, so it practically never has an answer — the name that actually
+    renders almost always comes from ``guild_display_names``, captured per
+    guild when each player rolled, scoped to `guild_id` so a name captured in
+    one server can never be handed back for another. The flat
+    ``display_names`` dict is a last-resort fallback for the rare case the
+    live cache *did* have an answer, and a mention is the final fallback.
+    Names are markdown-escaped so a ``_`` or ``*`` in a nickname can't
+    restyle the roster.
     """
     def resolve(uid: int) -> str:
         member = guild.get_member(uid) if guild is not None else None
@@ -33,7 +38,7 @@ def make_name_resolver(guild: "discord.Guild | None") -> NameFn:
             live = (member.display_name or "").strip()
             if live:
                 app_state.display_names[uid] = live
-        name = app_state.display_names.get(uid)
+        name = app_state.guild_display_names.get((guild_id, uid)) or app_state.display_names.get(uid)
         if not name:
             return mention(uid)
         return discord.utils.escape_markdown(name)
@@ -249,7 +254,7 @@ def _chunk_field_lines(lines: list[str], limit: int = EMBED_FIELD_VALUE_LIMIT) -
 
 
 def build_embed(state: RiskyRollState, guild: "discord.Guild | None" = None) -> discord.Embed:
-    name = make_name_resolver(guild)
+    name = make_name_resolver(guild, state.guild_id)
     if state.is_open:
         color = discord.Color(0xDC3545)
     elif state.highest_user is not None and state.lowest_user is None:

@@ -532,7 +532,9 @@ class RiskyRollView(BaseRiskyRollView):
             state.add_roll(interaction.user.id, roll)
             # Cache the roller's name so the roster embed can show it as text
             # instead of a <@id> mention that some viewers can't resolve.
-            app_state.display_names[interaction.user.id] = interaction.user.display_name
+            # Scoped to this guild — a nickname only holds here, and a bare
+            # user_id key would hand it to every other guild's roster too.
+            app_state.guild_display_names[(state.guild_id, interaction.user.id)] = interaction.user.display_name
 
             # From here the roll has counted. Anything that fails below is
             # reported as exactly that, never as a roll that didn't happen.
