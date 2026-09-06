@@ -56,6 +56,7 @@ class StateStore:
                     conn.execute("DROP TABLE IF EXISTS round_rolls")
                     conn.execute("DROP TABLE IF EXISTS active_rounds")
                     conn.execute("DROP TABLE IF EXISTS pending_questions")
+                    existing_tables -= {"round_rolls", "active_rounds", "pending_questions"}
 
             if "active_rounds" in existing_tables:
                 ar_columns = {row["name"] for row in conn.execute("PRAGMA table_info(active_rounds)").fetchall()}

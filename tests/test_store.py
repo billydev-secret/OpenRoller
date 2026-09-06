@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import sqlite3
 import tempfile
@@ -523,6 +524,38 @@ class StoreTests(unittest.TestCase):
 
         self.assertEqual(1, len(loaded))
         self.assertEqual({11: 80, 22: 40}, loaded[0].rolls)
+
+    def test_legacy_pre_game_id_schema_initializes_on_first_call(self) -> None:
+        # The old schema keyed active_rounds/pending_questions on channel_id
+        # with no game_id column at all. _initialize drops those tables and
+        # recreates them, but must not still be checking a stale snapshot of
+        # "tables that existed before the drop" when it applies the later
+        # ALTERs, or the very first boot after this branch deploys crashes.
+        fd, path = tempfile.mkstemp(suffix=".sqlite3")
+        self.addCleanup(os.unlink, path)
+        os.close(fd)
+        with contextlib.closing(sqlite3.connect(path)) as conn:
+            conn.execute(
+                "CREATE TABLE active_rounds ("
+                "channel_id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL, "
+                "opener_id INTEGER NOT NULL, message_id INTEGER, "
+                "is_open INTEGER NOT NULL DEFAULT 1, highest_user INTEGER, lowest_user INTEGER, "
+                "reroll_user_ids TEXT, auto_close_players INTEGER, auto_close_minutes INTEGER, "
+                "created_at REAL)"
+            )
+            conn.execute(
+                "CREATE TABLE round_rolls (channel_id INTEGER NOT NULL, user_id INTEGER NOT NULL, "
+                "roll INTEGER NOT NULL, PRIMARY KEY (channel_id, user_id))"
+            )
+            conn.execute(
+                "CREATE TABLE pending_questions (channel_id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL, "
+                "winner_id INTEGER NOT NULL, prompt_message_id INTEGER, participant_user_ids TEXT NOT NULL, "
+                "prompt_kind TEXT NOT NULL DEFAULT 'room')"
+            )
+            conn.commit()
+
+        store = StateStore(path)
+        run(store.initialize())  # must not raise on the very first call
 
 
 if __name__ == "__main__":
