@@ -155,8 +155,11 @@ class StoreTests(unittest.TestCase):
         run(self.store.save_round(state))
         run(self.store.delete_round(state.game_id))
 
-        loaded = run(self.store.load_active_rounds())
-        self.assertEqual([], loaded)
+        with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                "SELECT * FROM round_rolls WHERE game_id = ?", (state.game_id,)
+            ).fetchall()
+        self.assertEqual([], rows)
 
     def test_delete_nonexistent_round_is_safe(self) -> None:
         run(self.store.delete_round("999"))  # Should not raise
@@ -164,10 +167,15 @@ class StoreTests(unittest.TestCase):
     # --- created_at defaults ---
 
     def test_created_at_defaults_to_now_when_null_in_db(self) -> None:
-        before = time.time()
         state = self.make_state()
         run(self.store.save_round(state))
+        with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE active_rounds SET created_at = NULL WHERE game_id = ?", (state.game_id,)
+            )
+            conn.commit()
 
+        before = time.time()
         loaded = run(self.store.load_active_rounds())
 
         self.assertGreaterEqual(loaded[0].created_at, before)
@@ -225,6 +233,26 @@ class StoreTests(unittest.TestCase):
 
     def test_delete_nonexistent_pending_question_is_safe(self) -> None:
         run(self.store.delete_pending_question("999"))  # Should not raise
+
+    def test_save_and_load_pending_question_round_trips_extra_fields(self) -> None:
+        state = PendingQuestionState(
+            channel_id=100,
+            guild_id=200,
+            winner_id=300,
+            participant_user_ids={400, 500},
+            game_id=str(uuid.uuid4()),
+            prompt_kind="two_questioners",
+            lowest_tie_user_ids={500, 600},
+            extra_questioner_id=700,
+            questioners_asked={300},
+        )
+        run(self.store.save_pending_question(state))
+
+        loaded = run(self.store.load_pending_questions())
+
+        self.assertEqual({500, 600}, loaded[0].lowest_tie_user_ids)
+        self.assertEqual(700, loaded[0].extra_questioner_id)
+        self.assertEqual({300}, loaded[0].questioners_asked)
 
     def test_save_pending_question_updates_existing(self) -> None:
         state = PendingQuestionState(
@@ -356,6 +384,11 @@ class StoreTests(unittest.TestCase):
 
         self.assertEqual({200: 0}, run(self.store.load_min_game_times()))
 
+    def test_load_min_game_times_excludes_guilds_without_it_set(self) -> None:
+        run(self.store.set_ping_role(200, 999))  # guild row exists, min_game_seconds stays NULL
+
+        self.assertEqual({}, run(self.store.load_min_game_times()))
+
     def test_set_and_load_max_games_per_channel(self) -> None:
         run(self.store.set_max_games_per_channel(200, 3))
 
@@ -380,21 +413,35 @@ class StoreTests(unittest.TestCase):
         run(self.store.set_ping_role(200, 999))
         run(self.store.set_max_games_per_channel(200, 2))
         run(self.store.set_ping_role(201, 1))
+        run(self.store.save_round(self.make_state(guild_id=200)))
+        run(self.store.save_pending_question(self._pending("g200", time.time())))
+        run(self.store.save_posted_question(PostedQuestionState(
+            message_id=1,
+            channel_id=100,
+            guild_id=200,
+            asker_id=300,
+            allowed_replier_ids={400},
+            question_text="q",
+        )))
 
         run(self.store.delete_guild_data(200))
 
         self.assertEqual({201: 1}, run(self.store.load_ping_roles()))
         self.assertEqual({}, run(self.store.load_max_games_per_channel()))
+        self.assertEqual([], run(self.store.load_active_rounds()))
+        self.assertEqual([], run(self.store.load_pending_questions()))
+        self.assertEqual([], run(self.store.load_posted_questions()))
 
     def test_legacy_guild_settings_table_gains_new_columns(self) -> None:
         fd, path = tempfile.mkstemp(suffix=".sqlite3")
         self.addCleanup(os.unlink, path)
         os.close(fd)
-        with sqlite3.connect(path) as conn:
+        with contextlib.closing(sqlite3.connect(path)) as conn:
             conn.execute(
                 "CREATE TABLE guild_settings (guild_id INTEGER PRIMARY KEY, ping_role_id INTEGER)"
             )
             conn.execute("INSERT INTO guild_settings (guild_id, ping_role_id) VALUES (7, 8)")
+            conn.commit()
         store = StateStore(path)
         run(store.initialize())
 
@@ -564,7 +611,7 @@ class StoreTests(unittest.TestCase):
             conn.execute("SELECT 1")
 
     def test_database_runs_in_wal_mode(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
             mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
 
         self.assertEqual("wal", mode)
@@ -577,10 +624,9 @@ class StoreTests(unittest.TestCase):
         # Databases created before the reroll was removed still carry the
         # reroll_user_ids column. It is left in place rather than dropped, so
         # saving and loading a round must work around it without error.
-        import sqlite3
-
-        with sqlite3.connect(self.db_path) as conn:
+        with contextlib.closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute("ALTER TABLE active_rounds ADD COLUMN reroll_user_ids TEXT")
+            conn.commit()
         run(self.store.initialize())
 
         state = self.make_state()
