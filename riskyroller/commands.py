@@ -187,6 +187,38 @@ async def _start_game(
             raise
 
 
+async def _set_max_games_per_channel(interaction: discord.Interaction, count: int) -> None:
+    """Shared implementation for /risky_set_max_games."""
+    if interaction.guild is None:
+        await _send_ephemeral(interaction, NOT_IN_SERVER_TEXT)
+        return
+
+    if count < 0:
+        await _send_ephemeral(
+            interaction,
+            f"Max games per channel can't be negative. Use 0 to restore the default "
+            f"({DEFAULT_MAX_GAMES_PER_CHANNEL}), or the number of rounds that may be open at once.",
+        )
+        return
+
+    if count == 0:
+        app_state.max_games_per_channel.pop(interaction.guild.id, None)
+        await app_state.store.set_max_games_per_channel(interaction.guild.id, None)
+        await _send_ephemeral(
+            interaction,
+            f"Max games per channel reset to the default ({DEFAULT_MAX_GAMES_PER_CHANNEL}). /risky_start "
+            "refuses once a channel has that many open rounds.",
+        )
+    else:
+        app_state.max_games_per_channel[interaction.guild.id] = count
+        await app_state.store.set_max_games_per_channel(interaction.guild.id, count)
+        await _send_ephemeral(
+            interaction,
+            f"Max games per channel set to {count}. /risky_start refuses once a channel has that many "
+            "open rounds.",
+        )
+
+
 async def _reset_channel_state(interaction: discord.Interaction) -> None:
     """Shared implementation for /risky_reset_state.
 
@@ -335,7 +367,7 @@ def setup(bot: "Bot") -> None:
 
     @bot.tree.command(
         name="risky_set_min_game_time",
-        description="Set the minimum time before a round can be manually closed",
+        description="Set the minimum time before a round can close",
     )
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(administrator=True)
@@ -380,34 +412,7 @@ def setup(bot: "Bot") -> None:
         count=f"Open rounds allowed per channel (0 to restore the default of {DEFAULT_MAX_GAMES_PER_CHANNEL})"
     )
     async def risky_set_max_games(interaction: discord.Interaction, count: int):
-        if interaction.guild is None:
-            await _send_ephemeral(interaction, NOT_IN_SERVER_TEXT)
-            return
-
-        if count < 0:
-            await _send_ephemeral(
-                interaction,
-                f"Max games per channel can't be negative. Use 0 to restore the default "
-                f"({DEFAULT_MAX_GAMES_PER_CHANNEL}), or the number of rounds that may be open at once.",
-            )
-            return
-
-        if count == 0:
-            app_state.max_games_per_channel.pop(interaction.guild.id, None)
-            await app_state.store.set_max_games_per_channel(interaction.guild.id, None)
-            await _send_ephemeral(
-                interaction,
-                f"Max games per channel reset to the default ({DEFAULT_MAX_GAMES_PER_CHANNEL}). /risky_start "
-                "refuses once a channel has that many open rounds.",
-            )
-        else:
-            app_state.max_games_per_channel[interaction.guild.id] = count
-            await app_state.store.set_max_games_per_channel(interaction.guild.id, count)
-            await _send_ephemeral(
-                interaction,
-                f"Max games per channel set to {count}. /risky_start refuses once a channel has that many "
-                "open rounds.",
-            )
+        await _set_max_games_per_channel(interaction, count)
 
     @bot.tree.command(
         name="risky_reset_state",

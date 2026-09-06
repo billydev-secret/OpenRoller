@@ -7,8 +7,10 @@ from riskyroller.commands import (
     MAX_ROUND_LIFETIME_MINUTES,
     SETUP_FAILED_TEXT,
     _reset_channel_state,
+    _set_max_games_per_channel,
     _start_game,
 )
+from riskyroller.config import DEFAULT_MAX_GAMES_PER_CHANNEL
 from riskyroller.invite import invite_url
 from riskyroller.models import RiskyRollState
 
@@ -200,6 +202,55 @@ class StartGamePermissionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({}, app_state.active_games)
 
 
+class StartGameCapTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        app_state.active_games.clear()
+        app_state.max_games_per_channel.clear()
+        self.addCleanup(app_state.active_games.clear)
+        self.addCleanup(app_state.max_games_per_channel.clear)
+
+    async def test_channel_at_its_configured_cap_is_refused(self) -> None:
+        app_state.max_games_per_channel[300] = 2
+        app_state.active_games["g1"] = RiskyRollState(channel_id=100, guild_id=300, opener_id=1, game_id="g1")
+        app_state.active_games["g2"] = RiskyRollState(channel_id=100, guild_id=300, opener_id=1, game_id="g2")
+
+        # Defensive: this round is expected to be refused before it ever
+        # touches the store, but a broken cap comparison must fail on a
+        # clean assertion below rather than an incidental real-DB error.
+        fake_store = _fake_store("save_round")
+        with (
+            patch.object(app_state, "store", fake_store),
+            patch("riskyroller.commands.schedule_auto_close", AsyncMock()),
+        ):
+            interaction = _permissive_interaction(guild_id=300, channel_id=100)
+            await _start_game(
+                interaction, auto_close_players=25, auto_close_minutes=120, ping=False, skip_min_game_time=False
+            )
+
+        text = interaction.response.send_message.await_args.args[0]
+        self.assertIn("already has 2 open round", text)
+        self.assertEqual(2, len(app_state.active_games))
+        fake_store.save_round.assert_not_called()
+
+    async def test_channel_below_the_default_cap_is_allowed(self) -> None:
+        # No per-guild override set for this guild: falls back to
+        # DEFAULT_MAX_GAMES_PER_CHANNEL, which one open round is well under.
+        fake_store = _fake_store("save_round")
+        with (
+            patch.object(app_state, "store", fake_store),
+            patch("riskyroller.commands.schedule_auto_close", AsyncMock()),
+        ):
+            interaction = _permissive_interaction(guild_id=301, channel_id=101)
+            await _start_game(
+                interaction, auto_close_players=25, auto_close_minutes=120, ping=False, skip_min_game_time=False
+            )
+            await asyncio.sleep(0)
+
+        interaction.response.send_message.assert_awaited_once()
+        self.assertEqual(1, len(app_state.active_games))
+        self.assertNotIn(301, app_state.max_games_per_channel)
+
+
 class StartGameFailureTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         app_state.active_games.clear()
@@ -243,6 +294,41 @@ class StartGameFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("original boom", str(ctx.exception))
         self.assertEqual({}, app_state.active_games)
         fake_store.delete_round.assert_awaited_once()
+
+
+class SetMaxGamesCommandTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        app_state.max_games_per_channel.clear()
+        self.addCleanup(app_state.max_games_per_channel.clear)
+
+    async def test_zero_resets_the_configured_cap_to_the_default(self) -> None:
+        app_state.max_games_per_channel[400] = 3
+        fake_store = _fake_store("set_max_games_per_channel")
+        with patch.object(app_state, "store", fake_store):
+            interaction = Mock()
+            interaction.guild.id = 400
+            interaction.response.is_done.return_value = False
+            interaction.response.send_message = AsyncMock()
+
+            await _set_max_games_per_channel(interaction, 0)
+
+        self.assertNotIn(400, app_state.max_games_per_channel)
+        fake_store.set_max_games_per_channel.assert_awaited_once_with(400, None)
+        text = interaction.response.send_message.await_args.args[0]
+        self.assertIn(str(DEFAULT_MAX_GAMES_PER_CHANNEL), text)
+
+    async def test_positive_count_sets_the_configured_cap(self) -> None:
+        fake_store = _fake_store("set_max_games_per_channel")
+        with patch.object(app_state, "store", fake_store):
+            interaction = Mock()
+            interaction.guild.id = 401
+            interaction.response.is_done.return_value = False
+            interaction.response.send_message = AsyncMock()
+
+            await _set_max_games_per_channel(interaction, 5)
+
+        self.assertEqual(5, app_state.max_games_per_channel[401])
+        fake_store.set_max_games_per_channel.assert_awaited_once_with(401, 5)
 
 
 class ResetChannelStateTests(unittest.IsolatedAsyncioTestCase):
