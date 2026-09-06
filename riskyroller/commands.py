@@ -29,6 +29,16 @@ SETUP_FAILED_TEXT = (
     "Risky Rolls couldn't finish setting up this round, so it was cancelled and nothing is open. "
     "Try starting it again. If it keeps happening, whoever hosts this bot can find the error in its log."
 )
+# Applied only when a round would otherwise have neither close path armed —
+# see the note in _start_game. Generous on purpose: this is a backstop
+# against a round that never ends, not a policy about how long one should run.
+MAX_ROUND_LIFETIME_MINUTES = 24 * 60
+# Command-layer ceilings on the two /risky_start options, generous enough that
+# no real round would ever hit them — just wide enough to stop a stray extra
+# digit (or a negative) from being accepted as a value at all. 0 still means
+# "disable this path" on both.
+MAX_AUTO_CLOSE_PLAYERS = 100
+MAX_AUTO_CLOSE_MINUTES = 7 * 24 * 60
 
 
 async def _send_ephemeral(interaction: discord.Interaction, message: str) -> None:
@@ -101,12 +111,22 @@ async def _start_game(
             )
             return
 
+        close_players = auto_close_players if auto_close_players and auto_close_players >= 2 else None
+        close_minutes = auto_close_minutes if auto_close_minutes and auto_close_minutes > 0 else None
+        if close_players is None and close_minutes is None:
+            # Both close paths off leaves nothing to ever end the round: there's
+            # no message/channel-delete listener and no sweep of active_rounds,
+            # and setup_hook restores it across every restart, so it would lock
+            # this channel's slot forever. Falling back to a ceiling still lets
+            # either close path work exactly as asked when only one is off.
+            close_minutes = MAX_ROUND_LIFETIME_MINUTES
+
         state = RiskyRollState(
             channel_id=interaction.channel.id,
             guild_id=interaction.guild.id,
             opener_id=interaction.user.id,
-            auto_close_players=auto_close_players if auto_close_players and auto_close_players >= 2 else None,
-            auto_close_minutes=auto_close_minutes if auto_close_minutes and auto_close_minutes > 0 else None,
+            auto_close_players=close_players,
+            auto_close_minutes=close_minutes,
             skip_min_game_time=skip_min_game_time,
         )
         app_state.active_games[state.game_id] = state
@@ -132,9 +152,9 @@ async def _start_game(
             state.message_id = message.id
             await app_state.store.save_round(state)
 
-            if auto_close_minutes and auto_close_minutes > 0:
+            if close_minutes:
                 app_state.auto_close_tasks[state.game_id] = asyncio.create_task(
-                    schedule_auto_close(interaction.client, state.game_id, auto_close_minutes * 60)
+                    schedule_auto_close(interaction.client, state.game_id, close_minutes * 60)
                 )
         except Exception:
             app_state.active_games.pop(state.game_id, None)
@@ -173,8 +193,8 @@ def setup(bot: "Bot") -> None:
     )
     async def risky_start(
         interaction: discord.Interaction,
-        auto_close_players: int | None = 25,
-        auto_close_minutes: int | None = 120,
+        auto_close_players: app_commands.Range[int, 0, MAX_AUTO_CLOSE_PLAYERS] | None = 25,
+        auto_close_minutes: app_commands.Range[int, 0, MAX_AUTO_CLOSE_MINUTES] | None = 120,
     ):
         await _start_game(
             interaction,
@@ -195,8 +215,8 @@ def setup(bot: "Bot") -> None:
     )
     async def risky_start_no_ping(
         interaction: discord.Interaction,
-        auto_close_players: int | None = 25,
-        auto_close_minutes: int | None = 120,
+        auto_close_players: app_commands.Range[int, 0, MAX_AUTO_CLOSE_PLAYERS] | None = 25,
+        auto_close_minutes: app_commands.Range[int, 0, MAX_AUTO_CLOSE_MINUTES] | None = 120,
     ):
         await _start_game(
             interaction,

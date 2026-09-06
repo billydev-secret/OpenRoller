@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from riskyroller import state as app_state
-from riskyroller.commands import _start_game
+from riskyroller.commands import MAX_ROUND_LIFETIME_MINUTES, _start_game
 from riskyroller.invite import invite_url
 
 
@@ -96,6 +96,72 @@ class StartGameGuardTests(unittest.IsolatedAsyncioTestCase):
         interaction.client.get_guild.assert_called_once_with(interaction.guild.id)
         interaction.response.send_message.assert_awaited_once()
         self.assertEqual(1, len(app_state.active_games))
+
+
+class AutoCloseNormalizationTests(unittest.IsolatedAsyncioTestCase):
+    """Both close paths off must never happen: nothing else ever ends a round
+    (no message/channel-delete listener, no sweep of active_rounds, and
+    setup_hook restores it across every restart).
+    """
+
+    def setUp(self) -> None:
+        app_state.active_games.clear()
+        self.addCleanup(app_state.active_games.clear)
+        self.fake_store = _fake_store("save_round")
+        store_patcher = patch.object(app_state, "store", self.fake_store)
+        store_patcher.start()
+        self.addCleanup(store_patcher.stop)
+        self.schedule_mock = AsyncMock()
+        schedule_patcher = patch("riskyroller.commands.schedule_auto_close", self.schedule_mock)
+        schedule_patcher.start()
+        self.addCleanup(schedule_patcher.stop)
+
+    async def _start(self, players: int | None, minutes: int | None) -> RiskyRollState:
+        interaction = _permissive_interaction()
+        await _start_game(
+            interaction, auto_close_players=players, auto_close_minutes=minutes, ping=False, skip_min_game_time=False
+        )
+        # Let any auto_close_tasks entry actually run (it's a mock, so this
+        # finishes at once) rather than leaving it pending when the test ends.
+        await asyncio.sleep(0)
+        return next(iter(app_state.active_games.values()))
+
+    async def test_one_player_is_below_the_floor_and_does_not_arm(self) -> None:
+        state = await self._start(1, 120)
+        self.assertIsNone(state.auto_close_players)
+        self.assertEqual(120, state.auto_close_minutes)
+
+    async def test_two_players_is_the_floor_and_arms(self) -> None:
+        state = await self._start(2, None)
+        self.assertEqual(2, state.auto_close_players)
+        self.assertIsNone(state.auto_close_minutes)
+
+    async def test_zero_minutes_disables_the_minutes_close(self) -> None:
+        state = await self._start(25, 0)
+        self.assertEqual(25, state.auto_close_players)
+        self.assertIsNone(state.auto_close_minutes)
+
+    async def test_negative_minutes_disables_the_minutes_close(self) -> None:
+        state = await self._start(25, -5)
+        self.assertIsNone(state.auto_close_minutes)
+
+    async def test_positive_minutes_arms_the_minutes_close(self) -> None:
+        state = await self._start(25, 45)
+        self.assertEqual(45, state.auto_close_minutes)
+
+    async def test_both_disabled_falls_back_to_the_lifetime_ceiling(self) -> None:
+        state = await self._start(0, 0)
+        self.assertIsNone(state.auto_close_players)
+        self.assertEqual(MAX_ROUND_LIFETIME_MINUTES, state.auto_close_minutes)
+        # create_task schedules schedule_auto_close but doesn't run it before
+        # returning, so its call (not await) is what's observable here.
+        self.schedule_mock.assert_called_once()
+        self.assertEqual(MAX_ROUND_LIFETIME_MINUTES * 60, self.schedule_mock.call_args.args[2])
+
+    async def test_both_none_falls_back_to_the_lifetime_ceiling(self) -> None:
+        state = await self._start(None, None)
+        self.assertIsNone(state.auto_close_players)
+        self.assertEqual(MAX_ROUND_LIFETIME_MINUTES, state.auto_close_minutes)
 
 
 if __name__ == "__main__":
