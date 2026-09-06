@@ -24,6 +24,7 @@ class Bot(discord.Client):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self._invite_logged = False
+        self._startup_guild_sweep_done = False
         log.info("Bot is starting.")
 
     async def setup_hook(self) -> None:
@@ -122,6 +123,7 @@ class Bot(discord.Client):
     async def on_ready(self) -> None:
         log.info("Bot ready in %s guild(s).", len(self.guilds))
         self._log_invite_link_once()
+        await self._sweep_guilds_left_while_offline()
 
     def _log_invite_link_once(self) -> None:
         """Print the invite link on the first ready so a fresh install needs no other tool.
@@ -143,19 +145,42 @@ class Bot(discord.Client):
     async def on_guild_remove(self, guild: discord.Guild) -> None:
         guild_id = guild.id
         log.info("Removed from guild %s; clearing all stored state.", guild_id)
+        await self._drop_guild_state(guild_id)
 
+    async def _drop_guild_state(self, guild_id: int) -> None:
+        """Clear every in-memory and stored record of one guild.
+
+        Shared by on_guild_remove and the startup sweep below, since both
+        need to react to the same fact — the bot is no longer in this guild
+        — discovered at different times.
+
+        Each active game's pop/disable/delete happens under its own
+        get_game_lock, the same lock roll_button, close_button and
+        auto_close_round hold for their whole critical section. Without it,
+        a roll or an auto-close already in flight for this guild could
+        finish after teardown — re-editing the round message, saving a roll,
+        or posting a winner prompt for a guild whose data this call is about
+        to delete. Taking the lock first either waits for that in-flight
+        work to finish (so delete_guild_data below cleans up whatever it
+        wrote) or, if teardown gets there first, makes the in-flight
+        operation find the game already gone once it acquires the lock.
+        """
         app_state.ping_roles.pop(guild_id, None)
         app_state.min_game_seconds.pop(guild_id, None)
         app_state.max_games_per_channel.pop(guild_id, None)
+        for key in [k for k in app_state.guild_display_names if k[0] == guild_id]:
+            app_state.guild_display_names.pop(key, None)
 
         for game_id in [gid for gid, s in app_state.active_games.items() if s.guild_id == guild_id]:
-            task = app_state.auto_close_tasks.pop(game_id, None)
-            if task:
-                task.cancel()
-            app_state.active_games.pop(game_id, None)
+            async with app_state.get_game_lock(game_id):
+                task = app_state.auto_close_tasks.pop(game_id, None)
+                if task:
+                    task.cancel()
+                app_state.active_games.pop(game_id, None)
 
         for game_id in [gid for gid, s in app_state.pending_questions.items() if s.guild_id == guild_id]:
-            app_state.pending_questions.pop(game_id, None)
+            async with app_state.get_game_lock(game_id):
+                app_state.pending_questions.pop(game_id, None)
 
         for message_id in [mid for mid, s in app_state.posted_questions.items() if s.guild_id == guild_id]:
             app_state.posted_questions.pop(message_id, None)
@@ -164,6 +189,35 @@ class Bot(discord.Client):
             await app_state.store.delete_guild_data(guild_id)
         except Exception:
             log.exception("Failed to delete stored data for guild %s.", guild_id)
+
+    async def _sweep_guilds_left_while_offline(self) -> None:
+        """Drop state for a guild that removed the bot while it was offline.
+
+        on_guild_remove only fires for a removal the running bot is
+        connected to see. setup_hook loads every guild's rounds, prompts and
+        settings before the gateway has told us which guilds we're still
+        in, so a guild that removed the bot between two runs is never
+        cleaned up otherwise — its settings and rounds persist, and any
+        round past its player threshold gets its auto-close timer re-armed
+        on every restart, for a guild that can never see it fire. Runs once,
+        on the first ready, once self.guilds is actually populated.
+        """
+        if self._startup_guild_sweep_done:
+            return
+        self._startup_guild_sweep_done = True
+
+        current_guild_ids = {g.id for g in self.guilds}
+        known_guild_ids = (
+            set(app_state.ping_roles)
+            | set(app_state.min_game_seconds)
+            | set(app_state.max_games_per_channel)
+            | {s.guild_id for s in app_state.active_games.values()}
+            | {s.guild_id for s in app_state.pending_questions.values()}
+            | {s.guild_id for s in app_state.posted_questions.values()}
+        )
+        for guild_id in known_guild_ids - current_guild_ids:
+            log.info("Guild %s removed the bot while it was offline; clearing its stored state.", guild_id)
+            await self._drop_guild_state(guild_id)
 
 
 bot = Bot()
