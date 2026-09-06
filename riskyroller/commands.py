@@ -187,6 +187,86 @@ async def _start_game(
             raise
 
 
+async def _reset_channel_state(interaction: discord.Interaction) -> None:
+    """Shared implementation for /risky_reset_state.
+
+    Defers immediately: the cleanup below can be dozens of message edits (one
+    per stale round/prompt), easily enough to miss Discord's 3-second initial
+    response window, and pending_questions has no cap on how many a channel
+    can accumulate.
+    """
+    await interaction.response.defer(ephemeral=True)
+
+    if interaction.channel is None:
+        await _send_ephemeral(interaction, NOT_IN_SERVER_CHANNEL_TEXT)
+        return
+
+    async with app_state.get_channel_lock(interaction.channel.id):
+        channel_id = interaction.channel.id
+
+        game_ids = [
+            gid for gid, s in app_state.active_games.items()
+            if s.channel_id == channel_id
+        ]
+        question_ids = [
+            gid for gid, s in app_state.pending_questions.items()
+            if s.channel_id == channel_id
+        ]
+        posted_message_ids = [
+            mid for mid, s in app_state.posted_questions.items()
+            if s.channel_id == channel_id
+        ]
+
+        if not game_ids and not question_ids and not posted_message_ids:
+            await _send_ephemeral(
+                interaction,
+                "Nothing to reset here: this channel has no open round, no question prompt waiting on a "
+                "winner, and no question waiting on a reply.",
+            )
+            return
+
+        for game_id in game_ids:
+            task = app_state.auto_close_tasks.pop(game_id, None)
+            if task:
+                task.cancel()
+            state = app_state.active_games.pop(game_id, None)
+            if state is not None:
+                state.is_open = False
+                await disable_round_message(state, interaction.channel)
+            await app_state.store.delete_round(game_id)
+
+        for game_id in question_ids:
+            pending_state = app_state.pending_questions.pop(game_id, None)
+            if pending_state is not None:
+                await disable_pending_question_message(
+                    interaction.client,
+                    pending_state,
+                    "This question prompt was cancelled by an administrator's reset. Start a new round to play again.",
+                )
+            await app_state.store.delete_pending_question(game_id)
+
+        for message_id in posted_message_ids:
+            app_state.posted_questions.pop(message_id, None)
+            await app_state.store.delete_posted_question(message_id)
+
+        def plural(n: int, noun: str) -> str:
+            return f"{n} {noun}{'s' if n != 1 else ''}"
+
+        parts = [
+            text
+            for count, text in (
+                (len(game_ids), f"closed {plural(len(game_ids), 'round')}"),
+                (len(question_ids), f"cancelled {plural(len(question_ids), 'question prompt')}"),
+                (len(posted_message_ids), f"cleared {plural(len(posted_message_ids), 'unanswered question')}"),
+            )
+            if count
+        ]
+        await _send_ephemeral(
+            interaction,
+            f"Reset this channel: {join_names(parts)}. Start a new round with /risky_start.",
+        )
+
+
 def setup(bot: "Bot") -> None:
     @bot.tree.command(
         name="risky_start",
@@ -336,74 +416,7 @@ def setup(bot: "Bot") -> None:
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(administrator=True)
     async def risky_reset_state(interaction: discord.Interaction):
-        if interaction.channel is None:
-            await _send_ephemeral(interaction, NOT_IN_SERVER_CHANNEL_TEXT)
-            return
-
-        async with app_state.get_channel_lock(interaction.channel.id):
-            channel_id = interaction.channel.id
-
-            game_ids = [
-                gid for gid, s in app_state.active_games.items()
-                if s.channel_id == channel_id
-            ]
-            question_ids = [
-                gid for gid, s in app_state.pending_questions.items()
-                if s.channel_id == channel_id
-            ]
-            posted_message_ids = [
-                mid for mid, s in app_state.posted_questions.items()
-                if s.channel_id == channel_id
-            ]
-
-            if not game_ids and not question_ids and not posted_message_ids:
-                await _send_ephemeral(
-                    interaction,
-                    "Nothing to reset here: this channel has no open round, no question prompt waiting on a "
-                    "winner, and no question waiting on a reply.",
-                )
-                return
-
-            for game_id in game_ids:
-                task = app_state.auto_close_tasks.pop(game_id, None)
-                if task:
-                    task.cancel()
-                state = app_state.active_games.pop(game_id, None)
-                if state is not None:
-                    state.is_open = False
-                    await disable_round_message(state, interaction.channel)
-                await app_state.store.delete_round(game_id)
-
-            for game_id in question_ids:
-                pending_state = app_state.pending_questions.pop(game_id, None)
-                if pending_state is not None:
-                    await disable_pending_question_message(
-                        interaction.client,
-                        pending_state,
-                        "This question prompt was cancelled by an administrator's reset. Start a new round to play again.",
-                    )
-                await app_state.store.delete_pending_question(game_id)
-
-            for message_id in posted_message_ids:
-                app_state.posted_questions.pop(message_id, None)
-                await app_state.store.delete_posted_question(message_id)
-
-            def plural(n: int, noun: str) -> str:
-                return f"{n} {noun}{'s' if n != 1 else ''}"
-
-            parts = [
-                text
-                for count, text in (
-                    (len(game_ids), f"closed {plural(len(game_ids), 'round')}"),
-                    (len(question_ids), f"cancelled {plural(len(question_ids), 'question prompt')}"),
-                    (len(posted_message_ids), f"cleared {plural(len(posted_message_ids), 'unanswered question')}"),
-                )
-                if count
-            ]
-            await _send_ephemeral(
-                interaction,
-                f"Reset this channel: {join_names(parts)}. Start a new round with /risky_start.",
-            )
+        await _reset_channel_state(interaction)
 
     @bot.tree.command(
         name="invite",

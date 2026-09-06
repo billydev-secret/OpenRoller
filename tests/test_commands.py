@@ -3,8 +3,14 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from riskyroller import state as app_state
-from riskyroller.commands import MAX_ROUND_LIFETIME_MINUTES, SETUP_FAILED_TEXT, _start_game
+from riskyroller.commands import (
+    MAX_ROUND_LIFETIME_MINUTES,
+    SETUP_FAILED_TEXT,
+    _reset_channel_state,
+    _start_game,
+)
 from riskyroller.invite import invite_url
+from riskyroller.models import RiskyRollState
 
 
 def _fake_store(*method_names: str) -> Mock:
@@ -237,6 +243,54 @@ class StartGameFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("original boom", str(ctx.exception))
         self.assertEqual({}, app_state.active_games)
         fake_store.delete_round.assert_awaited_once()
+
+
+class ResetChannelStateTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        app_state.active_games.clear()
+        app_state.pending_questions.clear()
+        app_state.posted_questions.clear()
+        app_state.auto_close_tasks.clear()
+        self.addCleanup(app_state.active_games.clear)
+        self.addCleanup(app_state.pending_questions.clear)
+        self.addCleanup(app_state.posted_questions.clear)
+        self.addCleanup(app_state.auto_close_tasks.clear)
+
+    def _interaction(self, channel_id: int) -> Mock:
+        interaction = Mock()
+        interaction.channel.id = channel_id
+        interaction.response.defer = AsyncMock()
+        # A deferred interaction reads as done for the rest of its life.
+        interaction.response.is_done.return_value = True
+        interaction.followup.send = AsyncMock()
+        return interaction
+
+    async def test_defers_before_doing_any_cleanup_work(self) -> None:
+        # Up to dozens of message edits can happen before any reply is sent;
+        # deferring first is what keeps that under Discord's 3-second
+        # initial-response window.
+        interaction = self._interaction(channel_id=100)
+
+        await _reset_channel_state(interaction)
+
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+        interaction.followup.send.assert_awaited_once()
+        interaction.response.send_message.assert_not_called()
+
+    async def test_only_clears_the_calling_channels_rounds(self) -> None:
+        fake_store = _fake_store("delete_round", "delete_pending_question", "delete_posted_question")
+        with patch.object(app_state, "store", fake_store):
+            app_state.active_games["here"] = RiskyRollState(channel_id=100, guild_id=1, opener_id=1, game_id="here")
+            app_state.active_games["elsewhere"] = RiskyRollState(
+                channel_id=200, guild_id=1, opener_id=1, game_id="elsewhere"
+            )
+
+            interaction = self._interaction(channel_id=100)
+            await _reset_channel_state(interaction)
+
+        self.assertNotIn("here", app_state.active_games)
+        self.assertIn("elsewhere", app_state.active_games)
+        fake_store.delete_round.assert_awaited_once_with("here")
 
 
 if __name__ == "__main__":
