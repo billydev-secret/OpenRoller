@@ -51,18 +51,27 @@ async def _start_game(
         await _send_ephemeral(interaction, NOT_IN_SERVER_CHANNEL_TEXT)
         return
 
-    if interaction.guild.me is None:
-        # Installed with the applications.commands scope only: the slash
-        # commands exist but there is no bot account in the server, so nothing
-        # the bot posts on its own can land. No permission grant fixes that;
-        # re-authorising with the bot scope does, and keeps the settings.
+    if interaction.client.get_guild(interaction.guild.id) is None:
+        # discord.py synthesises interaction.guild.me on every interaction
+        # (Interaction._from_data adds it from the client's own user whenever
+        # it's missing), so it's never None and can't tell a commands-only
+        # install (slash commands added without the bot account) from a
+        # normal one. Whether the client's gateway cache has this guild at
+        # all is a real signal instead: a commands-only install never gets a
+        # GUILD_CREATE for it, so it's never cached — but the same "not
+        # cached" shape also happens for a few seconds after a fresh
+        # reconnect, for a guild the bot is genuinely in. So this refusal
+        # hedges rather than asserting, and suggests a retry first: a false
+        # positive here costs one retry, not a wrong claim that re-adding the
+        # bot is required.
         client = interaction.client
         application_id = client.application_id or (client.user.id if client.user else None)
-        link = f" Re-add me with this link, which keeps your settings: <{invite_url(application_id)}>" if application_id else ""
+        link = f" If re-adding fixes it, this link keeps your settings: <{invite_url(application_id)}>" if application_id else ""
         await _send_ephemeral(
             interaction,
-            "I'm installed on this server with slash commands only — my bot account was never added, so I "
-            f"can't post the round or anything after it.{link}",
+            "I don't see a bot account for me in this server, so I might not be able to post the round or "
+            "anything after it. If I was just added to this server, or I just reconnected to Discord, wait "
+            f"a few seconds and try again.{link}",
         )
         return
 
