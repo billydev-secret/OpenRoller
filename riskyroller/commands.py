@@ -5,7 +5,7 @@ import discord
 from discord import app_commands
 
 from . import state as app_state
-from .config import DEFAULT_MAX_GAMES_PER_CHANNEL, SUPPORT_INVITE_URL
+from .config import DEFAULT_MAX_GAMES_PER_CHANNEL, START_COOLDOWN_SECONDS, SUPPORT_INVITE_URL
 from .formatters import build_embed, format_duration, join_names, permission_help
 from .invite import invite_url
 from .logic import missing_start_permissions
@@ -330,12 +330,67 @@ async def _reset_channel_state(interaction: discord.Interaction) -> None:
         )
 
 
+def _start_cooldown(interaction: discord.Interaction) -> app_commands.Cooldown | None:
+    """One /risky_start per member per server, per START_COOLDOWN_SECONDS.
+
+    Returning None exempts the call, which is how 0 disables the setting.
+    """
+    if START_COOLDOWN_SECONDS <= 0:
+        return None
+    return app_commands.Cooldown(1, START_COOLDOWN_SECONDS)
+
+
+async def handle_app_command_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError,
+) -> None:
+    """Answer a command that never reached its own body.
+
+    Anything without a branch here is genuinely unexpected, so it gets a
+    logged traceback. A refusal the bot meant to make must NOT fall through to
+    that: it would tell the player the bot is broken and fill the log with
+    tracebacks for the guard doing its job.
+    """
+    if isinstance(error, app_commands.MissingPermissions):
+        await _send_ephemeral(
+            interaction,
+            "That command is for server administrators — it changes how Risky Rolls runs on this server. "
+            "Ask an admin to run it.",
+        )
+        return
+
+    if isinstance(error, app_commands.CommandOnCooldown):
+        await _send_ephemeral(
+            interaction,
+            f"You started a round here less than {format_duration(START_COOLDOWN_SECONDS)} ago, and that "
+            "command pings a role — try again in "
+            f"{format_duration(max(1, round(error.retry_after)))}. /risky_start_no_ping has no wait and "
+            "opens a round without the ping.",
+        )
+        return
+
+    log.exception("Unhandled app command error", exc_info=error)
+    await _send_ephemeral(
+        interaction,
+        "That command hit an error on my side — try it again. If it keeps failing, whoever hosts this "
+        "bot can find the details in its log.",
+    )
+
+
 def setup(bot: "Bot") -> None:
     @bot.tree.command(
         name="risky_start",
         description="Open a new Risky Rolls round in this channel",
     )
     @app_commands.guild_only()
+    # Per member, per server, and only on the variant that pings a role: a
+    # round is otherwise capped by volume (max games per channel) but not by
+    # rate, so one member could fire a role ping for every round they opened.
+    # A real round lasts minutes, so ordinary play never reaches this.
+    # The key is explicit: discord.py's default is user-level across every
+    # server at once, which would block someone in one server because they
+    # opened a round in another.
+    @app_commands.checks.dynamic_cooldown(_start_cooldown, key=lambda i: (i.guild_id, i.user.id))
     @app_commands.describe(
         auto_close_players="Auto-close when this many players have rolled",
         auto_close_minutes="Auto-close after this many minutes",
@@ -491,17 +546,4 @@ def setup(bot: "Bot") -> None:
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
     ) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            await _send_ephemeral(
-                interaction,
-                "That command is for server administrators — it changes how Risky Rolls runs on this server. "
-                "Ask an admin to run it.",
-            )
-            return
-
-        log.exception("Unhandled app command error", exc_info=error)
-        await _send_ephemeral(
-            interaction,
-            "That command hit an error on my side — try it again. If it keeps failing, whoever hosts this "
-            "bot can find the details in its log.",
-        )
+        await handle_app_command_error(interaction, error)

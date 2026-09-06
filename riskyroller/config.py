@@ -55,5 +55,10 @@ DEBUG: bool = get_bool_env("DEBUG", default=False)
 SYNC_COMMANDS_ON_STARTUP: bool = get_bool_env("SYNC_COMMANDS_ON_STARTUP", default=True)
 DEFAULT_MIN_GAME_SECONDS: int = _int_env("DEFAULT_MIN_GAME_SECONDS", 1800)
 DEFAULT_MAX_GAMES_PER_CHANNEL: int = _int_env("DEFAULT_MAX_GAMES_PER_CHANNEL", 10)
+# Seconds one member must wait between /risky_start rounds in a server. Only
+# the pinging command is limited: it can post a role ping on every run, and
+# nothing else caps how fast that happens. /risky_start_no_ping is never
+# limited, so seeding several channels at once still works. 0 disables it.
+START_COOLDOWN_SECONDS: int = _int_env("START_COOLDOWN_SECONDS", 60)
 # Where /support sends people. Unset means this copy has no support server.
 SUPPORT_INVITE_URL: str | None = (os.getenv("SUPPORT_INVITE_URL") or "").strip() or None

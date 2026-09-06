@@ -7,6 +7,8 @@ import discord
 from riskyroller import state as app_state
 from riskyroller.commands import (
     MAX_ROUND_LIFETIME_MINUTES,
+    _start_cooldown,
+    handle_app_command_error,
     SETUP_FAILED_TEXT,
     _reset_channel_state,
     _set_max_games_per_channel,
@@ -438,6 +440,42 @@ class StartGameChannelTypeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(1, len(app_state.active_games))
+
+
+class StartCooldownTests(unittest.IsolatedAsyncioTestCase):
+    """Only /risky_start is rate-limited, and a member who hits it is told so
+    rather than told the bot broke."""
+
+    def test_cooldown_is_one_per_configured_window(self) -> None:
+        with patch("riskyroller.commands.START_COOLDOWN_SECONDS", 60):
+            cooldown = _start_cooldown(Mock())
+
+        self.assertIsNotNone(cooldown)
+        self.assertEqual(1, cooldown.rate)
+        self.assertEqual(60, cooldown.per)
+
+    def test_zero_disables_it(self) -> None:
+        with patch("riskyroller.commands.START_COOLDOWN_SECONDS", 0):
+            self.assertIsNone(_start_cooldown(Mock()))
+
+    async def test_being_on_cooldown_is_explained_not_logged_as_a_fault(self) -> None:
+        interaction = _permissive_interaction()
+        error = discord.app_commands.CommandOnCooldown(discord.app_commands.Cooldown(1, 60), retry_after=42.0)
+
+        with self.assertNoLogs("riskyroller.commands", level="ERROR"):
+            await handle_app_command_error(interaction, error)
+
+        text = interaction.response.send_message.await_args.args[0]
+        self.assertIn("42 seconds", text)
+        self.assertIn("/risky_start_no_ping", text)
+
+    async def test_an_unexpected_error_still_logs_and_apologises(self) -> None:
+        interaction = _permissive_interaction()
+
+        with self.assertLogs("riskyroller.commands", level="ERROR"):
+            await handle_app_command_error(interaction, discord.app_commands.AppCommandError("boom"))
+
+        self.assertIn("error on my side", interaction.response.send_message.await_args.args[0])
 
 
 if __name__ == "__main__":
