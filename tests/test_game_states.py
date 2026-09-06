@@ -366,7 +366,12 @@ class GameStatePresentationTests(unittest.TestCase):
         self.assertIn("<@10> wins the round.", content)
         self.assertIn("<@20> <@30>", content)
 
-    def test_build_pending_prompt_content_direct_with_lowest_tie_rolloff(self) -> None:
+    def test_build_pending_prompt_content_direct_omits_the_rolloff_note(self) -> None:
+        # This prompt used to print a "tied → selected" note, but the state it
+        # is built from doesn't carry the round's lowest_user: it named
+        # whichever tied player had the smaller id, so it was wrong whenever
+        # the rolloff picked the other one and contradicted the round embed
+        # posted just above it. The embed does know, so the note lives there.
         state = PendingQuestionState(
             channel_id=1,
             guild_id=2,
@@ -380,7 +385,8 @@ class GameStatePresentationTests(unittest.TestCase):
         content = build_pending_prompt_content(state)
 
         self.assertIn("<@10> wins the round.", content)
-        self.assertIn("<@20>, <@30> → <@20>", content)
+        self.assertNotIn("→", content)
+        self.assertNotIn("<@30>", content)
         self.assertIn("Click **Ask Question** to send your question to <@20>.", content)
 
     def test_build_pending_prompt_content_room(self) -> None:

@@ -2,6 +2,8 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
+import discord
+
 from riskyroller import state as app_state
 from riskyroller.commands import (
     MAX_ROUND_LIFETIME_MINUTES,
@@ -34,6 +36,10 @@ def _permissive_interaction(*, guild_id: int = 200, channel_id: int = 100, user_
     """
     interaction = Mock()
     interaction.guild.id = guild_id
+    # A real text channel: _start_game refuses anything that isn't a text
+    # channel or thread, since the auto-close path can't re-find any other
+    # kind by id.
+    interaction.channel = Mock(spec=discord.TextChannel)
     interaction.channel.id = channel_id
     interaction.user.id = user_id
     interaction.client.get_guild.return_value = interaction.guild
@@ -66,6 +72,7 @@ class StartGameGuardTests(unittest.IsolatedAsyncioTestCase):
         ):
             interaction = Mock()
             interaction.guild.id = 200
+            interaction.channel = Mock(spec=discord.TextChannel)
             interaction.channel.id = 100
             interaction.client.get_guild.return_value = None
             interaction.client.application_id = 4242
@@ -377,6 +384,60 @@ class ResetChannelStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("here", app_state.active_games)
         self.assertIn("elsewhere", app_state.active_games)
         fake_store.delete_round.assert_awaited_once_with("here")
+
+
+class StartGameChannelTypeTests(unittest.IsolatedAsyncioTestCase):
+    """A round can only live where every later step can re-find its channel.
+
+    get_text_channel accepts a text channel or a thread and nothing else, so a
+    round opened in a voice or stage channel's built-in chat took rolls
+    normally and was then destroyed by auto-close with no result posted.
+    """
+
+    def setUp(self) -> None:
+        app_state.active_games.clear()
+        self.addCleanup(app_state.active_games.clear)
+
+    async def test_voice_channel_chat_is_refused_before_anything_is_created(self) -> None:
+        interaction = _permissive_interaction()
+        interaction.channel = Mock(spec=discord.VoiceChannel)
+        interaction.channel.id = 100
+        fake_store = _fake_store("save_round")
+
+        with patch.object(app_state, "store", fake_store):
+            await _start_game(
+                interaction,
+                auto_close_players=25,
+                auto_close_minutes=120,
+                ping=False,
+                skip_min_game_time=False,
+            )
+
+        text = interaction.response.send_message.await_args.args[0]
+        self.assertIn("ordinary text channel or a thread", text)
+        self.assertEqual({}, app_state.active_games)
+        fake_store.save_round.assert_not_awaited()
+
+    async def test_a_thread_is_allowed(self) -> None:
+        interaction = _permissive_interaction()
+        interaction.channel = Mock(spec=discord.Thread)
+        interaction.channel.id = 100
+        interaction.channel.send = AsyncMock(return_value=Mock(id=999))
+        fake_store = _fake_store("save_round")
+
+        with (
+            patch.object(app_state, "store", fake_store),
+            patch("riskyroller.commands.schedule_auto_close", AsyncMock()),
+        ):
+            await _start_game(
+                interaction,
+                auto_close_players=25,
+                auto_close_minutes=120,
+                ping=False,
+                skip_min_game_time=False,
+            )
+
+        self.assertEqual(1, len(app_state.active_games))
 
 
 if __name__ == "__main__":

@@ -195,12 +195,13 @@ def build_pending_prompt_content(state: PendingQuestionState) -> str:
         return "\n".join(lines)
 
     if state.prompt_kind == PromptKind.DIRECT:
-        selected_user_id = next(iter(sorted(state.participant_user_ids)), None)
-        lowest_rolloff_note = format_lowest_rolloff_note(state.lowest_tie_user_ids, selected_user_id)
+        # No rolloff note here. It used to name whichever tied player had the
+        # smaller user id, not the one the rolloff actually selected — this
+        # state doesn't carry the round's lowest_user, so the note was wrong
+        # about half the time and contradicted the round embed posted just
+        # above it, which does know and gets it right.
         target_mentions = format_user_mentions(state.participant_user_ids)
         lines = [f"🥇 <@{state.winner_id}> wins the round."]
-        if lowest_rolloff_note:
-            lines.append(lowest_rolloff_note)
         if len(state.participant_user_ids) > 1:
             lines.append(f"They rolled **100** — click **Ask Question** to send your question to {target_mentions}.")
         else:

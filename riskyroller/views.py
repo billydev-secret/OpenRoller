@@ -160,6 +160,23 @@ def _log_task_exception(task: asyncio.Task) -> None:
         log.error("Auto-close task failed.", exc_info=exc)
 
 
+async def _forget(delete, key, what: str) -> None:
+    """Delete a finished round or prompt from the store, logging any failure.
+
+    Every caller has already dropped the same thing from memory. Letting a
+    store failure propagate from here would leave the two out of step — gone
+    in this process but still on disk, so the next restart loads it back and
+    re-registers live buttons for a game that has already finished — and in
+    the auto-close and close paths it would abort the handler before the
+    question prompt goes out. Neither is worth a raise: the round is over
+    either way, and the stale row is swept eventually.
+    """
+    try:
+        await delete(key)
+    except Exception:
+        log.exception("Failed to delete %s from the store.", what)
+
+
 async def schedule_auto_close(client: discord.Client, game_id: str, delay: float) -> None:
     if delay > 0:
         await asyncio.sleep(delay)
@@ -201,7 +218,7 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
         if resolution.result_type == RoundResult.NOT_ENOUGH:
             state.is_open = False
             app_state.active_games.pop(game_id, None)
-            await app_state.store.delete_round(game_id)
+            await _forget(app_state.store.delete_round, game_id, f"round {game_id}")
             try:
                 await disable_round_message(state, channel)
                 rolled = len(state.rolls)
@@ -243,7 +260,7 @@ async def auto_close_round(client: discord.Client, game_id: str) -> None:
                 )
 
         app_state.active_games.pop(game_id, None)
-        await app_state.store.delete_round(game_id)
+        await _forget(app_state.store.delete_round, game_id, f"round {game_id}")
 
         if channel_forbidden:
             log.error(
@@ -276,7 +293,7 @@ async def _register_posted_question(posted: PostedQuestionState) -> None:
 
 async def _clear_posted_question(message_id: int) -> None:
     app_state.posted_questions.pop(message_id, None)
-    await app_state.store.delete_posted_question(message_id)
+    await _forget(app_state.store.delete_posted_question, message_id, f"posted question {message_id}")
 
 
 async def _send_question_message(
@@ -350,15 +367,26 @@ def _build_main_prompt_state(game_id: str, state: RiskyRollState, resolution) ->
 
 
 def _build_one_rule_prompt_state(game_id: str, state: RiskyRollState) -> PendingQuestionState | None:
-    if state.lowest_user is None or state.rolls.get(state.lowest_user) != 1 or state.highest_user is None:
+    """The 1 rule's own prompt: the second-highest roller's question at the loser.
+
+    How to Play promises "the top 2 players each ask the loser" — two
+    questions. The round winner's question at the loser is already the main
+    prompt, so this one carries only the *other* member of the top 2. Naming
+    the winner here as well gave the loser three questions, two of them from
+    the same player. With no second-highest roller — a two-player round —
+    there is no top 2, and this prompt would be a pure duplicate of the main
+    one, so it isn't posted at all.
+    """
+    if state.lowest_user is None or state.rolls.get(state.lowest_user) != 1:
+        return None
+    if state.second_highest_user is None:
         return None
     return PendingQuestionState(
         channel_id=state.channel_id,
         guild_id=state.guild_id,
-        winner_id=state.highest_user,
+        winner_id=state.second_highest_user,
         participant_user_ids={state.lowest_user},
         game_id=f"{game_id}:1",
-        extra_questioner_id=state.second_highest_user,
         prompt_kind=PromptKind.TWO_QUESTIONERS,
     )
 
@@ -373,7 +401,7 @@ async def _send_and_register_prompt(send_fn, game_id: str, prompt_state: Pending
         await _register_prompt(game_id, prompt_state, message)
     except Exception:
         app_state.pending_questions.pop(game_id, None)
-        await app_state.store.delete_pending_question(game_id)
+        await _forget(app_state.store.delete_pending_question, game_id, f"prompt {game_id}")
         raise
     return message
 
@@ -388,7 +416,7 @@ async def _try_send_one_rule_prompt(send_fn, game_id: str, state: RiskyRollState
     except Exception:
         log.exception("Failed to send 1-rule prompt for game %s.", game_id)
         app_state.pending_questions.pop(one_game_id, None)
-        await app_state.store.delete_pending_question(one_game_id)
+        await _forget(app_state.store.delete_pending_question, one_game_id, f"prompt {one_game_id}")
 
 
 async def _send_question_prompts_channel(
@@ -711,10 +739,7 @@ class RiskyRollView(BaseRiskyRollView):
                 # is_open, so a restart would reopen a round whose question
                 # has already been asked.
                 app_state.active_games.pop(self.game_id, None)
-                try:
-                    await app_state.store.delete_round(self.game_id)
-                except Exception:
-                    log.exception("Close: failed to delete the closed round %s from the store.", self.game_id)
+                await _forget(app_state.store.delete_round, self.game_id, f"round {self.game_id}")
 
 
 class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
@@ -840,7 +865,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                         return
 
                 app_state.pending_questions.pop(self.game_id, None)
-                await app_state.store.delete_pending_question(self.game_id)
+                await _forget(app_state.store.delete_pending_question, self.game_id, f"prompt {self.game_id}")
                 await disable_pending_question_message(
                     interaction.client,
                     state,
@@ -908,7 +933,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                     return
 
                 app_state.pending_questions.pop(self.game_id, None)
-                await app_state.store.delete_pending_question(self.game_id)
+                await _forget(app_state.store.delete_pending_question, self.game_id, f"prompt {self.game_id}")
                 await disable_pending_question_message(
                     interaction.client,
                     state,
@@ -928,7 +953,7 @@ class SixtyNineQuestionModal(discord.ui.Modal, title="Ask A Question"):
                 return
 
             app_state.pending_questions.pop(self.game_id, None)
-            await app_state.store.delete_pending_question(self.game_id)
+            await _forget(app_state.store.delete_pending_question, self.game_id, f"prompt {self.game_id}")
             await disable_pending_question_message(
                 interaction.client,
                 state,

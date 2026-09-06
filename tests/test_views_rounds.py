@@ -6,7 +6,7 @@ import discord
 
 from riskyroller import state as app_state
 from riskyroller.models import RiskyRollState
-from riskyroller.views import RiskyRollView, auto_close_round
+from riskyroller.views import RiskyRollView, _build_one_rule_prompt_state, auto_close_round
 
 
 def _expired_interaction() -> discord.NotFound:
@@ -240,6 +240,34 @@ class AutoCloseRoundTests(_RoundTestCase):
         text = channel.send.await_args.args[0]
         self.assertIn("Round auto-closed with no result", text)
         self.assertIn("1 has", text)
+
+
+class OneRulePromptTests(unittest.TestCase):
+    """How to Play promises "the top 2 players each ask the loser" — two
+    questions. The winner's own question at the loser is already the main
+    prompt, so this second prompt must carry only the *other* top-2 player."""
+
+    def _state(self, rolls: dict[int, int]) -> RiskyRollState:
+        state = RiskyRollState(channel_id=1, guild_id=2, opener_id=10, rolls=rolls, game_id="g")
+        state.resolve()
+        return state
+
+    def test_second_highest_is_the_only_questioner(self) -> None:
+        # 90 / 50 / 1: the winner (10) already asks via the main prompt, so
+        # naming them here too would ask the loser three times, twice by 10.
+        prompt = _build_one_rule_prompt_state("g", self._state({10: 90, 20: 50, 30: 1}))
+
+        self.assertIsNotNone(prompt)
+        self.assertEqual({20}, prompt.allowed_questioners())
+        self.assertEqual({30}, prompt.participant_user_ids)
+
+    def test_two_player_round_gets_no_one_rule_prompt(self) -> None:
+        # With no second-highest roller there is no "top 2": this prompt
+        # would be a pure duplicate of the main one.
+        self.assertIsNone(_build_one_rule_prompt_state("g", self._state({10: 90, 20: 1})))
+
+    def test_no_prompt_when_the_lowest_roll_is_not_a_1(self) -> None:
+        self.assertIsNone(_build_one_rule_prompt_state("g", self._state({10: 90, 20: 50, 30: 2})))
 
 
 if __name__ == "__main__":

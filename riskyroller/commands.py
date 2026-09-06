@@ -23,6 +23,11 @@ NOT_IN_SERVER_CHANNEL_TEXT = (
     "you want the round."
 )
 NOT_IN_SERVER_TEXT = "This setting belongs to a server — run the command inside the server you want to change."
+NOT_A_TEXT_CHANNEL_TEXT = (
+    "Risky Rolls needs an ordinary text channel or a thread. This one is a voice or stage channel's "
+    "built-in chat, where I can't reliably post the result after the round closes. Start the round in "
+    "a text channel instead — everyone in the voice call can still play."
+)
 # Reached only after the round message itself posted, so permissions are not
 # the problem; the log is the only lead.
 SETUP_FAILED_TEXT = (
@@ -59,6 +64,15 @@ async def _start_game(
     """Shared implementation for risky_start and risky_start_no_ping."""
     if interaction.guild is None or interaction.channel is None:
         await _send_ephemeral(interaction, NOT_IN_SERVER_CHANNEL_TEXT)
+        return
+
+    if not isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
+        # Every step after the opening message re-finds the channel by id, and
+        # that lookup only accepts a text channel or a thread. In a voice or
+        # stage channel's built-in chat the round would open and take rolls,
+        # then auto-close would fail to find the channel and delete the round
+        # with no result posted at all. Refuse up front instead.
+        await _send_ephemeral(interaction, NOT_A_TEXT_CHANNEL_TEXT)
         return
 
     if interaction.client.get_guild(interaction.guild.id) is None:
