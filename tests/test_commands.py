@@ -7,7 +7,7 @@ import discord
 from riskyroller import state as app_state
 from riskyroller.commands import (
     MAX_ROUND_LIFETIME_MINUTES,
-    _start_cooldown,
+    _ping_cooldown_remaining,
     handle_app_command_error,
     SETUP_FAILED_TEXT,
     _reset_channel_state,
@@ -442,32 +442,82 @@ class StartGameChannelTypeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(app_state.active_games))
 
 
-class StartCooldownTests(unittest.IsolatedAsyncioTestCase):
-    """Only /risky_start is rate-limited, and a member who hits it is told so
-    rather than told the bot broke."""
+class StartPingCooldownTests(unittest.IsolatedAsyncioTestCase):
+    """Only a start that actually pings a role spends the allowance."""
 
-    def test_cooldown_is_one_per_configured_window(self) -> None:
-        with patch("riskyroller.commands.START_COOLDOWN_SECONDS", 60):
-            cooldown = _start_cooldown(Mock())
+    def setUp(self) -> None:
+        for d in (app_state.active_games, app_state.ping_roles, app_state.start_ping_cooldowns):
+            d.clear()
+            self.addCleanup(d.clear)
+        self.fake_store = _fake_store("save_round")
+        patcher = patch.object(app_state, "store", self.fake_store)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        schedule = patch("riskyroller.commands.arm_auto_close", Mock())
+        schedule.start()
+        self.addCleanup(schedule.stop)
 
-        self.assertIsNotNone(cooldown)
-        self.assertEqual(1, cooldown.rate)
-        self.assertEqual(60, cooldown.per)
+    async def _start(self, interaction: Mock, *, ping: bool = True) -> None:
+        await _start_game(
+            interaction, auto_close_players=25, auto_close_minutes=120, ping=ping, skip_min_game_time=False
+        )
 
-    def test_zero_disables_it(self) -> None:
-        with patch("riskyroller.commands.START_COOLDOWN_SECONDS", 0):
-            self.assertIsNone(_start_cooldown(Mock()))
+    async def test_a_second_pinging_start_is_refused_and_offers_the_no_ping_command(self) -> None:
+        app_state.ping_roles[200] = 777
+        await self._start(_permissive_interaction())
 
-    async def test_being_on_cooldown_is_explained_not_logged_as_a_fault(self) -> None:
-        interaction = _permissive_interaction()
-        error = discord.app_commands.CommandOnCooldown(discord.app_commands.Cooldown(1, 60), retry_after=42.0)
+        second = _permissive_interaction()
+        await self._start(second)
 
-        with self.assertNoLogs("riskyroller.commands", level="ERROR"):
-            await handle_app_command_error(interaction, error)
-
-        text = interaction.response.send_message.await_args.args[0]
-        self.assertIn("42 seconds", text)
+        text = second.response.send_message.await_args.args[0]
+        self.assertIn("<@&777>", text)
         self.assertIn("/risky_start_no_ping", text)
+        # The alternative it offers differs in more than the ping.
+        self.assertIn("minimum game time", text)
+        self.assertEqual(1, len(app_state.active_games))
+
+    async def test_a_server_with_no_ping_role_is_never_limited(self) -> None:
+        # /risky_start notifies nobody here, so there is nothing to rate-limit.
+        await self._start(_permissive_interaction())
+        await self._start(_permissive_interaction())
+
+        self.assertEqual(2, len(app_state.active_games))
+        self.assertEqual({}, app_state.start_ping_cooldowns)
+
+    async def test_no_ping_starts_are_never_limited(self) -> None:
+        app_state.ping_roles[200] = 777
+
+        await self._start(_permissive_interaction(), ping=False)
+        await self._start(_permissive_interaction(), ping=False)
+
+        self.assertEqual(2, len(app_state.active_games))
+
+    async def test_a_refused_start_does_not_spend_the_allowance(self) -> None:
+        # The channel is full, so this start pings nobody. The next one, once
+        # a slot frees up, must not be told to wait.
+        app_state.ping_roles[200] = 777
+        app_state.max_games_per_channel[200] = 1
+        self.addCleanup(app_state.max_games_per_channel.clear)
+        app_state.active_games["taken"] = RiskyRollState(
+            channel_id=100, guild_id=200, opener_id=9, game_id="taken"
+        )
+
+        refused = _permissive_interaction()
+        await self._start(refused)
+
+        self.assertIn("already has", refused.response.send_message.await_args.args[0])
+        self.assertEqual({}, app_state.start_ping_cooldowns)
+
+    async def test_zero_disables_the_wait(self) -> None:
+        app_state.ping_roles[200] = 777
+        with patch("riskyroller.commands.START_COOLDOWN_SECONDS", 0):
+            await self._start(_permissive_interaction())
+            await self._start(_permissive_interaction())
+
+        self.assertEqual(2, len(app_state.active_games))
+
+    def test_remaining_is_zero_for_a_member_who_has_not_started_one(self) -> None:
+        self.assertEqual(0.0, _ping_cooldown_remaining(200, 1))
 
     async def test_an_unexpected_error_still_logs_and_apologises(self) -> None:
         interaction = _permissive_interaction()

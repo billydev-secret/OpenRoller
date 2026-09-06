@@ -93,7 +93,7 @@ cp .env.example .env               # Windows: copy .env.example .env
 - `GUILD_ID` (optional): the numeric server ID used by `DEBUG` mode. Leave it unset otherwise.
 - `DEFAULT_MIN_GAME_SECONDS` (optional): how long a round must stay open before it can close — by the opener's Close button or by the player-threshold auto-close — for servers that haven't set their own with `/risky_set_min_game_time`. Defaults to `1800`. `/risky_start_no_ping` skips the minimum for that round.
 - `DEFAULT_MAX_GAMES_PER_CHANNEL` (optional): open rounds allowed per channel, for servers that haven't set their own with `/risky_set_max_games`. Defaults to `10`.
-- `START_COOLDOWN_SECONDS` (optional): how long a member must wait between `/risky_start` rounds in one server. That command posts a role ping when a ping role is set, and nothing else limits how often; `/risky_start_no_ping` is never limited, so seeding several channels at once still works. Set `0` to turn it off. Defaults to `60`.
+- `START_COOLDOWN_SECONDS` (optional): how long a member must wait between `/risky_start` rounds **that ping a role**, per member per server. It applies only where an admin has set a ping role with `/risky_set_ping` — without one, `/risky_start` notifies nobody and isn't limited. A start that gets refused (full channel, missing permission) pings no one and doesn't count against it. `/risky_start_no_ping` is never limited, so seeding several channels at once still works. Set `0` to turn it off. Defaults to `60`.
 - `SUPPORT_INVITE_URL` (optional): the invite `/support` hands out. Unset means this copy has no support server, and `/support` says so.
 
 Booleans accept `1`/`true`/`yes`/`on` (case-insensitive); anything else is false.

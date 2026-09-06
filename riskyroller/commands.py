@@ -1,4 +1,6 @@
 import logging
+import math
+import time
 from typing import TYPE_CHECKING
 
 import discord
@@ -130,6 +132,23 @@ async def _start_game(
             )
             return
 
+        # Last guard before anything is created: every refusal above this
+        # point leaves the allowance untouched, because none of them pinged.
+        ping_role_id = app_state.ping_roles.get(interaction.guild.id) if ping else None
+        if ping_role_id is not None:
+            remaining = _ping_cooldown_remaining(interaction.guild.id, interaction.user.id)
+            if remaining > 0:
+                await _send_ephemeral(
+                    interaction,
+                    f"You pinged <@&{ping_role_id}> for a round here less than "
+                    f"{format_duration(START_COOLDOWN_SECONDS)} ago — try again in "
+                    f"{format_duration(math.ceil(remaining))}. /risky_start_no_ping opens a round right "
+                    "now without the ping (it also skips this server's minimum game time, so the round "
+                    "can be closed as soon as two people have rolled).",
+                )
+                return
+            app_state.start_ping_cooldowns[(interaction.guild.id, interaction.user.id)] = time.time()
+
         close_players = auto_close_players if auto_close_players and auto_close_players >= 2 else None
         close_minutes = auto_close_minutes if auto_close_minutes and auto_close_minutes > 0 else None
         if close_players is None and close_minutes is None:
@@ -153,11 +172,9 @@ async def _start_game(
         content = None
         allowed_mentions = discord.AllowedMentions.none()
 
-        if ping:
-            role_id = app_state.ping_roles.get(interaction.guild.id)
-            if role_id:
-                content = f"# <@&{role_id}> A new Risky Rolls round has begun!"
-                allowed_mentions = discord.AllowedMentions(roles=True)
+        if ping_role_id is not None:
+            content = f"# <@&{ping_role_id}> A new Risky Rolls round has begun!"
+            allowed_mentions = discord.AllowedMentions(roles=True)
 
         view = RiskyRollView(state.game_id)
         try:
@@ -174,6 +191,9 @@ async def _start_game(
             if close_minutes:
                 arm_auto_close(interaction.client, state.game_id, close_minutes * 60)
         except Exception:
+            # Nothing was posted, so no ping went out either.
+            if ping_role_id is not None:
+                app_state.start_ping_cooldowns.pop((interaction.guild.id, interaction.user.id), None)
             app_state.active_games.pop(state.game_id, None)
             try:
                 await app_state.store.delete_round(state.game_id)
@@ -330,14 +350,24 @@ async def _reset_channel_state(interaction: discord.Interaction) -> None:
         )
 
 
-def _start_cooldown(interaction: discord.Interaction) -> app_commands.Cooldown | None:
-    """One /risky_start per member per server, per START_COOLDOWN_SECONDS.
+def _ping_cooldown_remaining(guild_id: int, user_id: int) -> float:
+    """Seconds before this member may open another *pinging* round here.
 
-    Returning None exempts the call, which is how 0 disables the setting.
+    Deliberately not an app_commands cooldown decorator. That check runs
+    before the command body, so it cannot know two things this rule depends
+    on: whether the server has a ping role at all (without one, /risky_start
+    notifies nobody and there is nothing to rate-limit), and whether the round
+    was actually opened (a start refused for a full channel or a missing
+    permission pings no one, and must not spend the allowance). Checking here,
+    after every guard, is right by construction rather than by remembering to
+    reset the token on each refusal path.
     """
     if START_COOLDOWN_SECONDS <= 0:
-        return None
-    return app_commands.Cooldown(1, START_COOLDOWN_SECONDS)
+        return 0.0
+    started_at = app_state.start_ping_cooldowns.get((guild_id, user_id))
+    if started_at is None:
+        return 0.0
+    return max(0.0, START_COOLDOWN_SECONDS - (time.time() - started_at))
 
 
 async def handle_app_command_error(
@@ -359,16 +389,6 @@ async def handle_app_command_error(
         )
         return
 
-    if isinstance(error, app_commands.CommandOnCooldown):
-        await _send_ephemeral(
-            interaction,
-            f"You started a round here less than {format_duration(START_COOLDOWN_SECONDS)} ago, and that "
-            "command pings a role — try again in "
-            f"{format_duration(max(1, round(error.retry_after)))}. /risky_start_no_ping has no wait and "
-            "opens a round without the ping.",
-        )
-        return
-
     log.exception("Unhandled app command error", exc_info=error)
     await _send_ephemeral(
         interaction,
@@ -383,14 +403,6 @@ def setup(bot: "Bot") -> None:
         description="Open a new Risky Rolls round in this channel",
     )
     @app_commands.guild_only()
-    # Per member, per server, and only on the variant that pings a role: a
-    # round is otherwise capped by volume (max games per channel) but not by
-    # rate, so one member could fire a role ping for every round they opened.
-    # A real round lasts minutes, so ordinary play never reaches this.
-    # The key is explicit: discord.py's default is user-level across every
-    # server at once, which would block someone in one server because they
-    # opened a round in another.
-    @app_commands.checks.dynamic_cooldown(_start_cooldown, key=lambda i: (i.guild_id, i.user.id))
     @app_commands.describe(
         auto_close_players="Auto-close when this many players have rolled",
         auto_close_minutes="Auto-close after this many minutes",

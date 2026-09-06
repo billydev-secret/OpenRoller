@@ -185,6 +185,8 @@ class Bot(discord.Client):
         app_state.max_games_per_channel.pop(guild_id, None)
         for key in [k for k in app_state.guild_display_names if k[0] == guild_id]:
             app_state.guild_display_names.pop(key, None)
+        for key in [k for k in app_state.start_ping_cooldowns if k[0] == guild_id]:
+            app_state.start_ping_cooldowns.pop(key, None)
 
         for game_id in [gid for gid, s in app_state.active_games.items() if s.guild_id == guild_id]:
             async with app_state.get_game_lock(game_id):

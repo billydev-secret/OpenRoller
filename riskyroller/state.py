@@ -15,6 +15,12 @@ min_game_seconds: dict[int, int] = {}
 max_games_per_channel: dict[int, int] = {}
 auto_close_tasks: dict[str, asyncio.Task] = {}
 
+# (guild_id, user_id) -> when this member last opened a round that pinged the
+# server's ping role. Only pinging starts are recorded, so a server with no
+# ping role never accumulates any. Cleared per guild in bot.py's
+# on_guild_remove, like the name cache below.
+start_ping_cooldowns: dict[tuple[int, int], float] = {}
+
 # (guild_id, user_id) -> display name, captured when a player rolls so the
 # roster embed can print names instead of raw <@id> mentions (embeds don't
 # resolve mentions for members the viewer's client hasn't cached — mainly
